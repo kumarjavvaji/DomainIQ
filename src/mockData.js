@@ -1,0 +1,397 @@
+/**
+ * MOCK DATA — used when no Anthropic API key is configured.
+ * Demonstrates the full DomainIQ v3 UI with a Finlytica.ai / community banking
+ * reference domain analysis.
+ *
+ * To connect a real API key:
+ *   1. Create a file: src/apiKey.js  (gitignored)
+ *   2. export const ANTHROPIC_API_KEY = 'sk-ant-...'
+ *   3. Import it in src/api.js
+ */
+
+export const MOCK_PROJECT = {
+  domain: 'Finlytica.ai / community bank analytics',
+  industry: 'Fintech — managed analytics for financial institutions',
+  stage: 'Growth (Series C+)',
+  lens: 'Business Analyst',
+  operating_model: {
+    value_proposition: {
+      text: 'Finlytica delivers managed analytics to community and regional banks that lack internal data-science capacity, converting fragmented core-system data into governed, repeatable decision workflows with low operational burden.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    customers: {
+      text: 'Community banks ($200M–$5B assets), credit unions, and smaller regional banks. Buyers are operationally lean and face board-level pressure for AI-driven insights without the budget or staff to build internally.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    revenue_model: {
+      text: 'Likely a hybrid: platform subscription (data model, pipelines, dashboards) plus managed services fees for delivery, tuning, and ongoing support. Services component may dominate early revenue.',
+      evidence_type: 'hypothesis',
+      confidence: 'low',
+    },
+    key_capabilities: {
+      text: 'Banking-domain data normalization, reusable ML model library (churn, propensity, fraud signals), delivery playbook discipline, and client education to drive dashboard adoption.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    key_processes: {
+      text: 'Discovery and scope lock → data intake and readiness → model/dashboard prototype → UAT and workflow integration → launch and value review cadence.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    technology_signals: {
+      text: 'Likely cloud-hosted (AWS or Azure), Power BI or Tableau for dashboards, dbt or similar for data transformation. Core banking integrations (FiServ, Jack Henry, Symitar) are a critical dependency.',
+      evidence_type: 'hypothesis',
+      confidence: 'low',
+    },
+    ecosystem: {
+      text: 'Core banking system vendors as data sources; potential referral partners in banking consulting; third-party risk and compliance reviewers as gatekeepers.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    success_metrics: {
+      text: 'Time-to-first-dashboard, dashboard adoption rate (% of named users active at day 30/60/90), decisions influenced, spreadsheet reports replaced, client NPS, and net revenue retention.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+  },
+  personas: [
+    {
+      title: 'Executive Sponsor',
+      role: 'CEO, President, COO, sometimes CFO',
+      first_use_case: 'Deposit growth, profitability, or competitive positioning dashboard',
+      proof_needed: 'Manageable delivery burden, clear ROI story, phased rollout with defined success metrics',
+      objections: 'Vendor dependency risk, unclear ROI, fear of implementation burden on lean team',
+      buying_trigger: 'Board pressure for AI/data modernization, margin compression, or deposit flight',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+      kumar_overlay: 'Kumar\'s delivery discipline and escalation frameworks map directly to reducing the exec\'s perceived implementation risk',
+    },
+    {
+      title: 'Retail Growth Leader',
+      role: 'CMO, Head of Retail, Head of Deposits, VP CX',
+      first_use_case: 'Attrition risk detection and campaign targeting',
+      proof_needed: 'Better segmentation, actionable ranked lists, channel-ready export',
+      objections: 'Stale data, black-box model outputs, lists that can\'t be actioned without manual rework',
+      buying_trigger: 'Weak campaign ROI, rising attrition, or a failed deposit growth initiative',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+      kumar_overlay: '',
+    },
+    {
+      title: 'Risk / Financial Crime Leader',
+      role: 'CRO, CCO, BSA Officer, Fraud Director',
+      first_use_case: 'BSA/AML monitoring visibility or fraud early-warning signals',
+      proof_needed: 'Explainability, auditability, documented vendor controls, model-risk review materials',
+      objections: 'Model opacity, inadequate due diligence documentation, unclear data lineage',
+      buying_trigger: 'Regulatory exam finding, rising BSA backlog, or new fraud typology',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+      kumar_overlay: 'Kumar\'s governance and traceability background (IAM/RBAC, acceptance criteria discipline) speaks directly to this persona\'s documentation requirements',
+    },
+    {
+      title: 'Technology / Data Leader',
+      role: 'CIO, CTO, IT Director, Data Director',
+      first_use_case: 'Customer 360 integration, data architecture review',
+      proof_needed: 'Clear source mapping, access control model, refresh cadence, security posture, supportability for lean IT',
+      objections: 'Architecture fit concerns, unknown subcontractor model, data privacy and retention questions',
+      buying_trigger: 'Core system migration, cloud initiative, or exec mandate to "do something with data"',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+      kumar_overlay: '',
+    },
+  ],
+  opportunities: [
+    {
+      title: 'Productize the discovery-to-delivery intake workflow',
+      impact: 'high',
+      effort: 'medium',
+      horizon: 'now',
+      category: 'Delivery efficiency',
+      trigger: 'Each new client engagement currently restarts from scratch, burning delivery capacity',
+      description: 'Standardize the discovery questionnaire, data readiness checklist, and KPI definition templates into a repeatable intake package. Reduces time-to-scope-lock and creates a replicable onboarding motion.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    {
+      title: 'Build a governance evidence pack for risk/compliance buyers',
+      impact: 'high',
+      effort: 'low',
+      horizon: 'now',
+      category: 'Sales enablement / compliance',
+      trigger: 'Risk and compliance leaders are blocking deals due to inadequate vendor due diligence materials',
+      description: 'Create a pre-built third-party risk package: model documentation, data lineage diagrams, access control design, and incident response overview. Removes the most common deal blocker in community bank procurement.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    {
+      title: 'Define a "first use case" playbook with a 90-day value guarantee',
+      impact: 'high',
+      effort: 'medium',
+      horizon: 'now',
+      category: 'Go-to-market',
+      trigger: 'Buyers demand proof of value before committing to expansion — a defined entry point reduces sales friction',
+      description: 'Package one high-confidence use case (e.g. deposit attrition risk) with a defined 90-day delivery shape, named metrics, and a day-90 value review template. Lowers perceived risk and creates a clear expansion path.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    {
+      title: 'Create a persona-specific demo flow library',
+      impact: 'medium',
+      effort: 'medium',
+      horizon: 'next',
+      category: 'Sales enablement',
+      trigger: 'Generic demos fail to address persona-specific objections; buyers disengage',
+      description: 'Build tailored demo scripts for each buyer persona (exec sponsor, retail growth, risk/compliance, IT). Each flow leads with the persona\'s most pressing pain, shows the relevant output, and addresses the top two objections.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    {
+      title: 'Build a community bank benchmarking dataset',
+      impact: 'medium',
+      effort: 'high',
+      horizon: 'later',
+      category: 'Product differentiation',
+      trigger: 'Buyers ask "how do we compare?" — benchmarking creates stickiness and upsell surface',
+      description: 'Aggregate anonymized cross-client metrics (deposit retention rates, attrition signal accuracy, campaign conversion) into a benchmarking layer. Creates a network-effect moat and strengthens the ROI narrative.',
+      evidence_type: 'hypothesis',
+      confidence: 'low',
+    },
+  ],
+  delivery_model: {
+    archetype: 'Managed services — services-led with productized accelerators',
+    evidence_type: 'inferred_strategy',
+    phases: [
+      {
+        name: 'Discovery and scope lock',
+        timing: 'Weeks 1–2',
+        description: 'Define the business outcome, map stakeholders, inventory source systems, establish first KPI definitions, document data gaps, agree on success metrics and review cadence.',
+        outputs: ['Scope document', 'Persona & owner map', 'Source system inventory', 'KPI definitions v1', 'Data gap log'],
+      },
+      {
+        name: 'Data intake and readiness',
+        timing: 'Weeks 3–5',
+        description: 'Execute source extract plan, build data dictionary, normalize entity definitions, run quality checks, establish access control assumptions, and log unresolved issues.',
+        outputs: ['Data dictionary draft', 'Entity mapping', 'Quality check results', 'Unresolved issues log', 'Access control assumptions'],
+      },
+      {
+        name: 'Model and dashboard prototype',
+        timing: 'Weeks 6–8',
+        description: 'Deliver first dashboard or ranked output list. Validate metric calculations with SMEs. Collect usability feedback. Surface false-positive and false-negative considerations.',
+        outputs: ['Prototype dashboard', 'Sample insights', 'SME validation notes', 'Metric calculation audit', 'Usability feedback log'],
+      },
+      {
+        name: 'UAT, workflow integration, and launch',
+        timing: 'Weeks 9–12',
+        description: 'Run UAT scenarios with named stakeholders. Deliver training and operational playbook. Define issue-routing model. Launch with adoption milestones and day-30/60/90 review schedule.',
+        outputs: ['UAT scenarios', 'Training plan', 'Operational playbook', 'Go-live checklist', 'Day-30 review template'],
+      },
+    ],
+    pm_ba_leverage: 'The PM/BA creates the most value at the boundary between analytics output and operating rhythm: translating a dashboard into a named decision, assigning a threshold that triggers action, and defining who owns each step in the review cadence. This is the layer that determines whether the engagement produces insights that change behavior or insights that get ignored.',
+    common_failure_modes: 'Scope creep during data intake (new source systems added after scope lock), dashboard adoption stalls because no one owns the decision workflow, risk/compliance review initiated too late and blocks go-live, and metric definitions disputed after delivery because they were not written down and agreed in writing during discovery.',
+  },
+  governance: [
+    {
+      area: 'Third-party vendor risk',
+      risk_level: 'high',
+      description: 'Community banks face OCC and FFIEC guidance on third-party risk management. Finlytica must provide a complete vendor due diligence package before procurement can approve. This is the most common deal blocker.',
+      icon: 'ti-shield',
+      evidence_type: 'verified_fact',
+      confidence: 'high',
+    },
+    {
+      area: 'Model risk management',
+      risk_level: 'high',
+      description: 'Any predictive output used in a credit, fraud, or BSA decision may trigger model risk review under SR 11-7. The platform must document model methodology, validation approach, and performance monitoring.',
+      icon: 'ti-cpu',
+      evidence_type: 'verified_fact',
+      confidence: 'high',
+    },
+    {
+      area: 'Data lineage and auditability',
+      risk_level: 'medium',
+      description: 'Examiners and internal audit teams require clear data lineage from source system to dashboard metric. Without documented lineage, any regulatory question about a metric output becomes an audit finding.',
+      icon: 'ti-git-branch',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    {
+      area: 'Access control and data segregation',
+      risk_level: 'medium',
+      description: 'Role-based access controls must be documented and enforced to satisfy both information security policy and privacy obligations. Weak access models are a recurring finding in fintech vendor reviews.',
+      icon: 'ti-lock',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+    {
+      area: 'Subcontractor and offshore delivery risk',
+      risk_level: 'medium',
+      description: 'If PKSI uses offshore resources for delivery or data processing, the bank\'s third-party risk program must account for subcontractor oversight. This is often underdocumented in early-stage analytics vendors.',
+      icon: 'ti-users',
+      evidence_type: 'hypothesis',
+      confidence: 'low',
+    },
+    {
+      area: 'Data retention and deletion',
+      risk_level: 'medium',
+      description: 'Banks must understand how long client data is retained on the vendor\'s platform, what deletion procedures exist, and how data is handled at contract termination. This is frequently missing from early contracts.',
+      icon: 'ti-trash',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+    },
+  ],
+  evidence_map: [
+    {
+      claim: 'Community banks face OCC and FFIEC third-party risk guidance that requires vendor due diligence before procurement approval',
+      evidence_type: 'verified_fact',
+      source: 'OCC Bulletin 2023-17 / FFIEC guidance',
+      confidence: 'high',
+      used_in: ['Governance', 'Opportunities'],
+    },
+    {
+      claim: 'SR 11-7 model risk guidance applies to predictive outputs used in credit, fraud, or BSA decisions',
+      evidence_type: 'verified_fact',
+      source: 'Federal Reserve SR 11-7',
+      confidence: 'high',
+      used_in: ['Governance'],
+    },
+    {
+      claim: 'Finlytica / PKSI operates a hybrid product + services model — platform accelerator plus managed delivery',
+      evidence_type: 'user_provided',
+      source: 'User research notes / ChatGPT thread export',
+      confidence: 'medium',
+      used_in: ['Operating model', 'Delivery model'],
+    },
+    {
+      claim: 'Community banks that lack internal data science teams are the primary target buyer',
+      evidence_type: 'user_provided',
+      source: 'User research notes',
+      confidence: 'medium',
+      used_in: ['Personas', 'Operating model'],
+    },
+    {
+      claim: 'Buyers object to "AI theater" — they need ROI proof and manageable delivery burden, not novelty',
+      evidence_type: 'inferred_strategy',
+      source: 'AI domain analysis + user context',
+      confidence: 'medium',
+      used_in: ['Personas', 'Opportunities'],
+    },
+    {
+      claim: 'Deposit attrition, campaign targeting, and BSA/AML are the highest-priority first use cases',
+      evidence_type: 'inferred_strategy',
+      source: 'AI domain analysis',
+      confidence: 'medium',
+      used_in: ['Opportunities', 'Delivery model'],
+    },
+    {
+      claim: 'Finlytica has approximately 37 community bank clients',
+      evidence_type: 'hypothesis',
+      source: 'Unverified — prior conversation estimate',
+      confidence: 'low',
+      used_in: ['Operating model context only'],
+    },
+    {
+      claim: 'PKSI and Finlytica.ai are related entities — PKSI is the client-facing delivery brand, Finlytica.ai the analytics platform',
+      evidence_type: 'user_provided',
+      source: 'User research notes',
+      confidence: 'medium',
+      used_in: ['Operating model'],
+    },
+  ],
+  artifacts: [
+    {
+      title: 'Community Bank AI Analytics Readiness Assessment',
+      why_credible: 'A readiness assessment is a structured BA deliverable — it does not require internal Finlytica access, only domain understanding, persona mapping, and process thinking. It is fully defensible as independent research.',
+      claims_it_proves: [
+        'Understanding of community bank buyer constraints and governance requirements',
+        'Ability to structure a discovery process with acceptance criteria',
+        'Awareness of third-party risk, model risk, and data lineage obligations',
+      ],
+      data_needed: 'Synthetic bank profile (asset size, system vendors, staff headcount). Public FFIEC/OCC guidance. No client data required.',
+      interview_signal: 'Demonstrates domain depth, structured PM/BA thinking, and governance awareness in a single artifact — without overclaiming a formal client engagement.',
+      kumar_fit: 'Directly leverages Kumar\'s QA-to-PM discipline (acceptance criteria, readiness gates, escalation logic) and IAM/access control background in a banking-specific context.',
+    },
+    {
+      title: 'Banking Analytics Use-Case Map with Persona, KPI, and Governance Columns',
+      why_credible: 'A use-case map is a standard BA portfolio artifact. It can be built entirely from public domain knowledge and structured research — no client access required.',
+      claims_it_proves: [
+        'Persona-level understanding of who buys and why',
+        'Ability to connect a business problem to a measurable output',
+        'Governance and risk awareness woven into use-case design',
+      ],
+      data_needed: 'No data required. Structure only: use case, primary persona, decision supported, data needed, key KPI, governance concern, adoption metric.',
+      interview_signal: 'Shows a PM/BA who thinks in systems — connecting buyer motivation, delivery design, and risk controls in one view.',
+      kumar_fit: 'Maps naturally to Kumar\'s experience analyzing support signals and Salesforce trends — translating operational noise into structured product backlog candidates.',
+    },
+    {
+      title: '30/60/90 Day Plan for a Finlytica-Style PM/BA Role',
+      why_credible: 'A 30/60/90 plan is a hiring deliverable, not a client deliverable. It is expected as a portfolio artifact and demonstrates readiness without implying a formal engagement.',
+      claims_it_proves: [
+        'Understands the delivery operating model well enough to prioritize onboarding tasks',
+        'Can translate domain knowledge into a concrete ramp-up plan',
+        'Aware of the governance and client-trust dynamics of the role',
+      ],
+      data_needed: 'No data required. Structured narrative with named milestones, stakeholder questions, and success metrics at each phase.',
+      interview_signal: 'Interviewers routinely ask "what would your first 90 days look like?" — having a written, domain-specific answer is a strong differentiator.',
+      kumar_fit: 'Kumar\'s QA-to-PM transition demonstrates exactly the ramp-up pattern a hiring manager at a services-led analytics firm would value: structured, validation-first, stakeholder-aware.',
+    },
+  ],
+  kumar_overlay: {
+    applied: true,
+    role_target: 'Product Owner / Business Analyst at a fintech or community banking analytics firm',
+    positioning_notes: 'Kumar\'s strongest connection to this domain is the translation layer between messy operational data and governed, repeatable decision workflows — exactly what community banks need and what Finlytica delivers. The QA-to-PM path demonstrates validation discipline and acceptance-criteria rigor that maps directly to delivery trust-building in a regulated environment.',
+    safe_language: '"I used a fintech analytics vendor as a reference model to study how AI-enabled managed analytics can help community banks move from manual reporting to governed decision workflows. The work produced buyer personas, use-case maps, a readiness assessment framework, and AI-assisted BA/PM workflow artifacts."',
+    avoid_claiming: 'Do not say: "I consulted for Finlytica," "I delivered for Finlytica clients," "I owned Finlytica product strategy," or cite specific client metrics, revenue impact, or production outcomes unless separately substantiated.',
+  },
+  patterns: [
+    {
+      title: 'Regulated buyers block on documentation before capability',
+      category: 'governance',
+      insight: 'In regulated industries (banking, healthcare, insurance), the most common deal blocker is not product capability — it is missing vendor documentation. Governance readiness is a sales prerequisite, not a post-sales activity.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+      counterexamples: 'Less true in early-stage startup ecosystems or industries with low regulatory oversight (e.g. consumer SaaS, e-commerce).',
+      domain_applicability: 'sector-specific',
+      domains: ['Finlytica.ai / community bank analytics'],
+      count: 1,
+    },
+    {
+      title: 'Services-led analytics vendors win on delivery trust, not model accuracy',
+      category: 'operating_model',
+      insight: 'When the buyer lacks internal data science capacity, the competitive differentiator is delivery reliability and operational clarity — not algorithmic novelty. Buyers buy confidence that insight will reach their decision meetings.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'medium',
+      counterexamples: 'Less true when the buyer has a strong internal data team and is buying a point solution for a specific model capability.',
+      domain_applicability: 'broad',
+      domains: ['Finlytica.ai / community bank analytics'],
+      count: 1,
+    },
+    {
+      title: '"Show me ROI, not AI" is the universal objection in enterprise analytics',
+      category: 'persona',
+      insight: 'Economic buyers in enterprise contexts consistently object to AI theater — they want measurable business outcomes tied to existing workflows, not impressive demos disconnected from how decisions are made.',
+      evidence_type: 'inferred_strategy',
+      confidence: 'high',
+      counterexamples: 'Less dominant in innovation-driven buyers (R&D teams, venture-backed digital units) who have runway to experiment.',
+      domain_applicability: 'broad',
+      domains: ['Finlytica.ai / community bank analytics'],
+      count: 1,
+    },
+  ],
+  narrative: `Finlytica.ai — operating under the Pegasus Knowledge Solutions (PKSI) delivery brand — occupies a structurally attractive but operationally demanding position in the market: managed analytics for community and regional banks that cannot justify building an internal data science function.
+
+The core value proposition is not algorithmic sophistication. It is time-to-insight with manageable delivery burden. Community banks ($200M–$5B in assets) face fragmented core systems, spreadsheet-heavy reporting, board-level pressure for AI modernization, and lean IT and operations teams that cannot absorb a complex implementation. Finlytica's job is to absorb that complexity and surface governed, repeatable outputs that fit into existing decision meetings.
+
+The strategic tension in this model is the services drag: each client engagement carries high delivery cost, and the path from services-led to product-led requires standardizing what is currently bespoke. The PM/BA opportunity is precisely here — converting discovery, intake, and delivery into repeatable packages that reduce cost-per-engagement while improving client outcomes.
+
+Three opportunities stand out. First, a governance evidence pack that pre-empts third-party risk review (the most common deal blocker in community bank procurement). Second, a "first use case in 90 days" playbook that reduces buyer risk perception and creates a structured expansion path. Third, persona-specific demo flows that replace generic capability pitches with objection-specific narratives tailored to the exec sponsor, the retail growth leader, and the risk/compliance gatekeeper.
+
+What separates successful delivery in this domain is not the quality of the model — it is the discipline of the intake process, the clarity of the acceptance criteria, and the rigor of the day-30/60/90 value review. A PM or BA who can run that layer creates durable client trust and repeatable delivery margin.`,
+}
+
+export const MOCK_PATTERNS = {
+  regulated_buyers_block_on_documentation: MOCK_PROJECT.patterns[0],
+  services_led_analytics_vendors_win: MOCK_PROJECT.patterns[1],
+  show_me_roi_not_ai: MOCK_PROJECT.patterns[2],
+}

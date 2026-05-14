@@ -1,0 +1,144 @@
+/* ── DomainIQ v3 — Global styles & design tokens ── */
+
+:root {
+  --bg:      #0e0f11;
+  --surface: #16181c;
+  --s2:      #1e2026;
+  --s3:      #252830;
+  --border:  #2a2d35;
+  --border2: #363a45;
+
+  --accent: #00e5b4;
+  --a2:     #7c6cfa;
+  --a3:     #f97316;
+  --a4:     #38bdf8;
+  --a5:     #e879f9;
+
+  --text:   #f0f1f3;
+  --muted:  #6b7280;
+  --muted2: #9ca3af;
+
+  --fd: 'Syne', sans-serif;
+  --fm: 'DM Mono', monospace;
+  --r:  10px;
+
+  /* Trust level palette */
+  --trust-verified:   #00e5b4;
+  --trust-user:       #38bdf8;
+  --trust-inferred:   #f97316;
+  --trust-hypothesis: #a78bfa;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--fd);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button  { font-family: var(--fd); cursor: pointer; }
+input, textarea, select { font-family: var(--fd); color: var(--text); }
+
+/* Scrollbars */
+::-webkit-scrollbar       { width: 3px; height: 3px; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* ── Trust badges ── */
+.trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  font-family: var(--fm);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.trust-verified   { color: var(--trust-verified);   border-color: rgba(0,229,180,.3);   background: rgba(0,229,180,.06); }
+.trust-user       { color: var(--trust-user);        border-color: rgba(56,189,248,.3);  background: rgba(56,189,248,.06); }
+.trust-inferred   { color: var(--trust-inferred);    border-color: rgba(249,115,22,.3);  background: rgba(249,115,22,.06); }
+.trust-hypothesis { color: var(--trust-hypothesis);  border-color: rgba(167,139,250,.3); background: rgba(167,139,250,.06); }
+
+/* ── Generic badges ── */
+.badge {
+  font-size: 9px;
+  font-family: var(--fm);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.b-high   { background: rgba(249,115,22,.10); color: #fb923c;       border-color: rgba(249,115,22,.2); }
+.b-med    { background: rgba(0,229,180,.08);  color: var(--accent);  border-color: rgba(0,229,180,.2); }
+.b-low    { background: rgba(107,114,128,.1); color: var(--muted2);  border-color: var(--border); }
+.b-blue   { background: rgba(56,189,248,.08); color: var(--a4);      border-color: rgba(56,189,248,.2); }
+.b-purple { background: rgba(124,108,250,.1); color: var(--a2);      border-color: rgba(124,108,250,.2); }
+.b-pink   { background: rgba(232,121,249,.08);color: var(--a5);      border-color: rgba(232,121,249,.2); }
+
+/* ── Card ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 12px;
+  margin-bottom: 8px;
+}
+.card-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 7px;
+  font-family: var(--fm);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.card-body {
+  font-size: 11px;
+  color: var(--muted2);
+  line-height: 1.75;
+}
+
+/* ── Overlay card (Kumar L5) ── */
+.overlay-card {
+  background: rgba(168,139,250,.04);
+  border: 1px solid rgba(168,139,250,.2);
+  border-radius: var(--r);
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+/* ── Empty state ── */
+.empty {
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--muted);
+}
+.empty i    { font-size: 26px; display: block; margin-bottom: 10px; }
+.empty p    { font-size: 11px; line-height: 1.7; }
+.empty .hint { font-size: 10px; font-family: var(--fm); color: var(--a2); margin-top: 6px; }
+
+/* ── Tag pill ── */
+.pd-tag {
+  font-size: 9px;
+  font-family: var(--fm);
+  background: var(--s2);
+  border: 1px solid var(--border);
+  color: var(--muted2);
+  padding: 1px 6px;
+  border-radius: 3px;
+  display: inline-block;
+}
