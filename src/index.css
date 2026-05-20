@@ -44,6 +44,15 @@ html, body, #root {
 button  { font-family: var(--fd); cursor: pointer; }
 input, textarea, select { font-family: var(--fd); color: var(--text); }
 
+select {
+  background-color: var(--s2);
+  color: var(--text);
+}
+select option {
+  background-color: var(--s2);
+  color: var(--text);
+}
+
 /* Scrollbars */
 ::-webkit-scrollbar       { width: 3px; height: 3px; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
@@ -141,4 +150,98 @@ input, textarea, select { font-family: var(--fd); color: var(--text); }
   padding: 1px 6px;
   border-radius: 3px;
   display: inline-block;
+}
+
+/* ── v4 node type badges ── */
+.node-type {
+  font-size: 9px;
+  font-family: var(--fm);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.node-finding     { color: var(--a4);     border-color: rgba(56,189,248,.3);  background: rgba(56,189,248,.07); }
+.node-assumption  { color: var(--a3);     border-color: rgba(249,115,22,.3);  background: rgba(249,115,22,.07); }
+.node-hypothesis  { color: var(--a2);     border-color: rgba(124,108,250,.3); background: rgba(124,108,250,.07); }
+.node-risk        { color: #fb923c;       border-color: rgba(251,146,60,.3);  background: rgba(251,146,60,.07); }
+.node-opportunity { color: var(--accent); border-color: rgba(0,229,180,.3);   background: rgba(0,229,180,.07); }
+.node-constraint  { color: var(--a5);     border-color: rgba(232,121,249,.3); background: rgba(232,121,249,.07); }
+
+/* ── v4 node status badges ── */
+.node-status {
+  font-size: 9px;
+  font-family: var(--fm);
+  padding: 2px 6px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.ns-pending    { color: var(--muted);   background: var(--s2);              border: 1px solid var(--border); }
+.ns-accepted   { color: var(--accent);  background: rgba(0,229,180,.08);    border: 1px solid rgba(0,229,180,.25); }
+.ns-challenged { color: #fb923c;        background: rgba(251,146,60,.08);   border: 1px solid rgba(251,146,60,.25); }
+.ns-rejected   { color: #f87171;        background: rgba(248,113,113,.08);  border: 1px solid rgba(248,113,113,.25); }
+.ns-review     { color: var(--a2);      background: rgba(124,108,250,.08);  border: 1px solid rgba(124,108,250,.25); }
+
+/* ── v4 node card ── */
+.node-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 12px;
+  margin-bottom: 6px;
+  transition: border-color .15s;
+}
+.node-card.is-challenged { border-color: rgba(251,146,60,.4); }
+.node-card.is-accepted   { border-color: rgba(0,229,180,.3); }
+.node-card.is-rejected   { border-color: rgba(248,113,113,.3); opacity: .7; }
+
+/* ── v4 diff panel ── */
+.diff-modified  { border-left: 3px solid #fb923c; padding-left: 10px; margin-bottom: 8px; }
+.diff-added     { border-left: 3px solid var(--accent); padding-left: 10px; margin-bottom: 8px; }
+.diff-removed   { border-left: 3px solid #f87171; padding-left: 10px; margin-bottom: 8px; opacity: .7; }
+.diff-preserved { border-left: 3px solid var(--border2); padding-left: 10px; margin-bottom: 4px; }
+
+/* ── v4 challenge modal overlay ── */
+.v4-modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.v4-modal {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  padding: 20px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+}
+
+/* ── v4 preset chip ── */
+.preset-chip {
+  font-size: 10px;
+  font-family: var(--fm);
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border2);
+  background: var(--s2);
+  color: var(--muted2);
+  cursor: pointer;
+  transition: all .15s;
+}
+.preset-chip.selected {
+  background: rgba(251,146,60,.1);
+  border-color: rgba(251,146,60,.4);
+  color: #fb923c;
+}
+.preset-chip:hover:not(.selected) {
+  border-color: var(--border2);
+  color: var(--text);
 }

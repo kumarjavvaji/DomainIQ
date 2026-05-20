@@ -3,6 +3,8 @@ import { useProjects, usePatterns } from './useStorage'
 import { callClaude, buildPrompt, hasApiKey } from './api'
 import { getTrust, confPct, TABS, FOCUS_OPTIONS, PERSONA_ICONS, ANALYSIS_STAGES } from './constants'
 import { MOCK_PROJECT, MOCK_PATTERNS } from './mockData'
+import { useSessions, useGenerationPolicy } from './v4storage'
+import SessionFlow from './v4/SessionFlow'
 
 // ─────────────────────────────────────────────────────────────
 // ROOT
@@ -11,7 +13,12 @@ export default function App() {
   const { projects, saveProject, deleteProject } = useProjects()
   const { patterns, mergePatterns } = usePatterns()
 
-  const [view, setView]             = useState('home')   // home | project | patterns | overlays
+  // v4 state — additive, does not replace v3
+  const { sessions, saveSession, deleteSession } = useSessions()
+  const { policy: globalPolicy } = useGenerationPolicy()
+  const [activeSessionId, setActiveSessionId] = useState(null)
+
+  const [view, setView]             = useState('home')   // home | project | patterns | overlays | v4session
   const [activeTab, setActiveTab]   = useState('setup')
   const [activeProjectId, setActiveId] = useState(null)
 
@@ -36,11 +43,26 @@ export default function App() {
   const projectCount = Object.keys(projects).length
   const patternCount = Object.keys(patterns).length
   const claimCount   = Object.values(projects).reduce((a, p) => a + (p.data?.evidence_map?.length || 0), 0)
+  const sessionCount = Object.keys(sessions).length
 
   // ── Navigation ─────────────────────────────────────────────
-  function goHome()     { setView('home');     setActiveId(null) }
-  function goPatterns() { setView('patterns'); setActiveId(null) }
-  function goOverlays() { setView('overlays'); setActiveId(null) }
+  function goHome()     { setView('home');     setActiveId(null); setActiveSessionId(null) }
+  function goPatterns() { setView('patterns'); setActiveId(null); setActiveSessionId(null) }
+  function goOverlays() { setView('overlays'); setActiveId(null); setActiveSessionId(null) }
+
+  // v4 session navigation — additive route, v3 routes unchanged
+  function newV4Session() {
+    const id = 'v4s_' + Date.now()
+    setActiveSessionId(id)
+    setActiveId(null)
+    setView('v4session')
+  }
+
+  function openV4Session(id) {
+    setActiveSessionId(id)
+    setActiveId(null)
+    setView('v4session')
+  }
 
   function newProject() {
     const id = 'p_' + Date.now()
@@ -141,6 +163,7 @@ export default function App() {
           Evidence-first domain research &amp; portfolio intelligence
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          <Pill label="Sessions" value={sessionCount} accent="var(--accent)" />
           <Pill label="Projects" value={projectCount} />
           <Pill label="Patterns" value={patternCount} />
           <Pill label="Claims"   value={claimCount} />
@@ -152,8 +175,16 @@ export default function App() {
         {/* Sidebar */}
         <aside style={S.sidebar}>
           <div style={S.sidebarTop}>
-            <button style={S.newBtn} onClick={newProject}>
-              <i className="ti ti-plus" /> New analysis
+            {/* v4 primary button */}
+            <button style={S.newBtn} onClick={newV4Session}>
+              <i className="ti ti-sparkles" /> New session
+            </button>
+            {/* v3 secondary button — unchanged functionality */}
+            <button
+              style={{ ...S.newBtn, marginTop: 5, background: 'var(--s2)', color: 'var(--muted2)', border: '1px solid var(--border)', fontSize: 10 }}
+              onClick={newProject}
+            >
+              <i className="ti ti-plus" /> v3 analysis
             </button>
           </div>
           <div style={S.sidebarScroll}>
@@ -164,8 +195,45 @@ export default function App() {
               <NavItem icon="ti-user-star"        label="My overlays"     active={view === 'overlays'} onClick={goOverlays} />
             </div>
 
+            {/* v4 sessions section */}
             <div style={S.sbSection}>
-              <div style={S.sbLabel}>Projects</div>
+              <div style={S.sbLabel}>Sessions <span style={{ color: 'var(--accent)', fontSize: 8 }}>v4</span></div>
+              {Object.keys(sessions).length === 0 && (
+                <div style={{ fontSize: 10, color: 'var(--muted)', padding: '3px 8px' }}>No sessions yet</div>
+              )}
+              {Object.entries(sessions)
+                .sort(([, a], [, b]) => (b.ts || 0) - (a.ts || 0))
+                .map(([id, s]) => (
+                  <div
+                    key={id}
+                    style={{
+                      ...S.projItem,
+                      color: activeSessionId === id ? 'var(--accent)' : 'var(--muted2)',
+                      background: activeSessionId === id ? 'var(--s2)' : 'transparent',
+                    }}
+                    onClick={() => openV4Session(id)}
+                  >
+                    <div style={{
+                      width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                      background: activeSessionId === id ? 'var(--accent)' : 'var(--border2)',
+                    }} />
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, fontFamily: 'var(--fm)' }}>
+                      {s.entity?.name || 'New session'}
+                    </span>
+                    <button
+                      style={S.delBtn}
+                      onClick={e => { e.stopPropagation(); deleteSession(id); if (activeSessionId === id) goHome() }}
+                    >
+                      <i className="ti ti-x" />
+                    </button>
+                  </div>
+                ))
+              }
+            </div>
+
+            {/* v3 projects section — unchanged */}
+            <div style={S.sbSection}>
+              <div style={S.sbLabel}>Projects <span style={{ color: 'var(--muted)', fontSize: 8 }}>v3</span></div>
               {sortedProjects.length === 0 && (
                 <div style={{ fontSize: 10, color: 'var(--muted)', padding: '3px 8px' }}>No analyses yet</div>
               )}
@@ -200,9 +268,20 @@ export default function App() {
 
         {/* Main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {view === 'home'     && <HomeView onNew={newProject} onDemo={loadMockDemo} apiKeySet={hasApiKey()} />}
+          {view === 'home'     && <HomeView onNew={newV4Session} onNewV3={newProject} onDemo={loadMockDemo} apiKeySet={hasApiKey()} />}
           {view === 'patterns' && <PatternsView patterns={patterns} />}
           {view === 'overlays' && <OverlaysView projects={projects} />}
+          {view === 'v4session' && (
+            <SessionFlow
+              key={activeSessionId}
+              sessionId={activeSessionId}
+              savedSession={sessions[activeSessionId] || null}
+              globalPolicy={globalPolicy}
+              apiKeySet={hasApiKey()}
+              onSave={saveSession}
+              onBack={goHome}
+            />
+          )}
           {view === 'project'  && (
             <>
               {/* Tab bar */}
@@ -248,10 +327,11 @@ export default function App() {
 // ─────────────────────────────────────────────────────────────
 // SHARED PRIMITIVES
 // ─────────────────────────────────────────────────────────────
-function Pill({ label, value }) {
+function Pill({ label, value, accent }) {
+  const c = accent || 'var(--accent)'
   return (
     <div style={{ fontSize: 9, fontFamily: 'var(--fm)', background: 'var(--s2)', border: '1px solid var(--border)', padding: '3px 7px', borderRadius: 3, color: 'var(--muted2)' }}>
-      {label}: <span style={{ color: 'var(--accent)' }}>{value}</span>
+      {label}: <span style={{ color: c }}>{value}</span>
     </div>
   )
 }
@@ -378,7 +458,7 @@ function LoadingView({ stages, currentStage, pct, label }) {
 // ─────────────────────────────────────────────────────────────
 // HOME VIEW
 // ─────────────────────────────────────────────────────────────
-function HomeView({ onNew, onDemo, apiKeySet }) {
+function HomeView({ onNew, onNewV3, onDemo, apiKeySet }) {
   const layers = [
     { n: 'L1', t: 'Raw project research — AI output, always labeled as inference' },
     { n: 'L2', t: 'Extracted claims — verified_fact / user_provided / inferred_strategy / hypothesis' },
@@ -388,11 +468,19 @@ function HomeView({ onNew, onDemo, apiKeySet }) {
   ]
   return (
     <div style={{ padding: 16, maxWidth: 640 }}>
-      <SecHeader title="DomainIQ v3" badge="Research-to-Artifact OS" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <h2 style={{ fontSize: 13, fontWeight: 600 }}>DomainIQ</h2>
+        <span style={{ fontSize: 9, fontFamily: 'var(--fm)', background: 'rgba(0,229,180,.08)', color: 'var(--accent)', border: '1px solid rgba(0,229,180,.2)', padding: '2px 6px', borderRadius: 3 }}>
+          v4 · governed inference
+        </span>
+        <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', border: '1px solid var(--border)', padding: '2px 6px', borderRadius: 3 }}>
+          v3 · report mode
+        </span>
+      </div>
       <p style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.8, marginBottom: 16 }}>
-        An evidence-first domain research tool for PM and BA professionals. Analyze any company or industry,
-        map the operating model, profile personas, identify opportunities, and surface portfolio artifacts
-        — with every claim typed, traced, and confidence-rated.
+        An evidence-first domain research and strategic analysis tool. v4 introduces inspectable inference nodes,
+        user challenge notes, scoped regeneration, and token-bounded prompt packets.
+        v3 report mode remains available for full one-shot analyses.
       </p>
 
       {!apiKeySet && (
@@ -401,11 +489,27 @@ function HomeView({ onNew, onDemo, apiKeySet }) {
             <i className="ti ti-info-circle" style={{ fontSize: 11, verticalAlign: -1 }} /> Running in demo mode
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.7 }}>
-            No API key detected. The app runs on seed data so you can explore the full UI.
-            To enable live analysis, add <code style={{ fontFamily: 'var(--fm)', color: 'var(--accent)' }}>VITE_ANTHROPIC_API_KEY=sk-ant-...</code> to a <code style={{ fontFamily: 'var(--fm)' }}>.env.local</code> file and restart the dev server.
+            No API key detected. Both v4 sessions and v3 analyses run on seed data.
+            To enable live analysis, add <code style={{ fontFamily: 'var(--fm)', color: 'var(--accent)' }}>VITE_ANTHROPIC_API_KEY=sk-ant-...</code> to a <code style={{ fontFamily: 'var(--fm)' }}>.env.local</code> file and restart.
           </div>
         </div>
       )}
+
+      {/* v4 session card */}
+      <div className="card" style={{ marginBottom: 10, borderColor: 'rgba(0,229,180,.2)' }}>
+        <div className="card-label">
+          <i className="ti ti-sparkles" style={{ color: 'var(--accent)' }} />
+          v4 — Governed inference loop
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.7, marginBottom: 10 }}>
+          Stage 1 generates inspectable nodes. You accept, challenge (with a note), or reject each one.
+          Challenges trigger scoped regeneration — only the challenged node and its direct downstream are updated.
+          A diff shows exactly what changed and why.
+        </div>
+        <button style={{ ...S.goBtn, maxWidth: 200 }} onClick={onNew}>
+          <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> New session (v4)
+        </button>
+      </div>
 
       <div className="card" style={{ marginBottom: 10 }}>
         <div className="card-label"><i className="ti ti-database" style={{ color: 'var(--a4)' }} /> Five memory layers — never silently blended</div>
@@ -424,13 +528,19 @@ function HomeView({ onNew, onDemo, apiKeySet }) {
         <TrustLegend />
       </div>
 
+      {/* v3 buttons */}
       <div style={{ display: 'flex', gap: 8 }}>
-        <button style={{ ...S.goBtn, maxWidth: 180 }} onClick={onNew}>+ New analysis</button>
         <button
-          style={{ ...S.goBtn, maxWidth: 200, background: 'var(--s2)', color: 'var(--muted2)', border: '1px solid var(--border)' }}
+          style={{ ...S.goBtn, maxWidth: 160, background: 'var(--s2)', color: 'var(--muted2)', border: '1px solid var(--border)', fontSize: 11 }}
+          onClick={onNewV3}
+        >
+          <i className="ti ti-plus" style={{ fontSize: 12 }} /> v3 analysis
+        </button>
+        <button
+          style={{ ...S.goBtn, maxWidth: 200, background: 'var(--s2)', color: 'var(--muted2)', border: '1px solid var(--border)', fontSize: 11 }}
           onClick={onDemo}
         >
-          <i className="ti ti-player-play" style={{ fontSize: 12 }} /> Load demo data
+          <i className="ti ti-player-play" style={{ fontSize: 12 }} /> Load v3 demo data
         </button>
       </div>
     </div>
