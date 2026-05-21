@@ -1,25 +1,33 @@
 import React, { useState, useEffect } from 'react'
 import IntentCapture from './IntentCapture'
 import Stage1Panel from './Stage1Panel'
+import Stage2Panel from './Stage2Panel'
 import ChallengeModal from './ChallengeModal'
 import {
   buildStage1Prompt,
-  buildScopedRegenPrompt,
+  buildPressureTestPrompt,
+  buildStage2Prompt,
   MOCK_V4_STAGE1,
-  MOCK_SCOPED_REGEN_RESULT,
+  MOCK_PRESSURE_TEST_RESULT_REVISE,
+  MOCK_PRESSURE_TEST_RESULT_PRESERVE,
+  MOCK_V4_STAGE2,
 } from '../v4prompts'
 import {
   getDirectDeps,
   getDirectDownstream,
   buildAcceptedSummary,
+  buildStage2ContextPacket,
   computeDiff,
   applyDiff,
 } from '../v4utils'
-import { callClaude } from '../api'
+import { callClaude, callClaudeWithSearch } from '../api'
 
-// step: 'intent' | 'generating' | 'inspect' | 'regenerating'
+// step: 'intent' | 'generating' | 'inspect' | 'regenerating' | 'stage2_generating' | 'stage2'
 export default function SessionFlow({ sessionId, savedSession, globalPolicy, apiKeySet, onSave, onBack }) {
-  const [step, setStep]           = useState(savedSession?.stage1 ? 'inspect' : 'intent')
+  const [step, setStep]           = useState(
+    savedSession?.stage2 ? 'stage2'  :
+    savedSession?.stage1 ? 'inspect' : 'intent'
+  )
   const [session, setSession]     = useState(savedSession || buildNewSession(sessionId, globalPolicy))
   const [challengingNodeId, setChallengeNodeId] = useState(null)
   const [diff, setDiff]           = useState(null)
@@ -55,7 +63,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           intent,
           policy: baseSession.generationPolicy,
         })
-        const raw = await callClaude(prompt, 1800)
+        const raw = await callClaude(prompt, 3500)
         stage1Data = JSON.parse(raw)
       }
 
@@ -105,8 +113,14 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     setChallengeNodeId(null)
   }
 
-  // ── Scoped regeneration for a single challenged node ─────────
-  async function handleRegenNode(nodeId) {
+  // ── Needs review — system-directed precision hardening ────────
+  function handleNeedsReviewClick(nodeId) {
+    setSession(prev => updateNode(prev, nodeId, { userStatus: 'needs_review' }))
+    handleRegenNode(nodeId, 'system_review')
+  }
+
+  // ── Pressure test / system review for a single node ──────────
+  async function handleRegenNode(nodeId, mode = 'user_challenge') {
     const nodes = session.stage1.nodes
     const challengedNode = nodes.find(n => n.id === nodeId)
     if (!challengedNode) return
@@ -120,48 +134,70 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       const directDownstream = getDirectDownstream(challengedNode, nodes)
       const acceptedSummary  = buildAcceptedSummary(nodes)
 
-      let regenResult
+      let ptResult
+      let rawSearchBlocks = []
 
       if (!apiKeySet) {
-        // Demo mode — use mock result if challenging n3, otherwise echo a trivial no-op
-        await delay(900)
-        if (nodeId === 'n3') {
-          regenResult = MOCK_SCOPED_REGEN_RESULT
+        // Demo mode — system_review always uses preserve mock; challenge on n3 uses revise mock
+        await delay(1400)
+        if (nodeId === 'n3' && mode !== 'system_review') {
+          const mock = MOCK_PRESSURE_TEST_RESULT_REVISE
+          ptResult = mock.ptResult
+          rawSearchBlocks = mock.rawSearchBlocks
         } else {
-          regenResult = {
-            revisedNode:            { ...challengedNode, changeReason: 'Demo: no live API key — no real revision performed.' },
-            updatedDownstream:      [],
-            preservedDownstreamIds: directDownstream.map(n => n.id),
-          }
+          const mock = MOCK_PRESSURE_TEST_RESULT_PRESERVE
+          ptResult = { ...mock.ptResult, challengedNodeId: nodeId }
+          rawSearchBlocks = mock.rawSearchBlocks
         }
       } else {
-        const prompt = buildScopedRegenPrompt({
+        const prompt = buildPressureTestPrompt({
           challengedNode,
           directDeps,
           directDownstream,
-          intent:        session.intent,
-          policy:        session.generationPolicy,
+          intent:         session.intent,
+          policy:         session.generationPolicy,
           policyOverride: null,
           acceptedSummary,
+          mode,
         })
-        const raw = await callClaude(prompt, 900)
-        regenResult = JSON.parse(raw)
+        const { text, rawSearchBlocks: blocks } = await callClaudeWithSearch(prompt, 3500)
+        rawSearchBlocks = blocks
+        ptResult = JSON.parse(text)
+        // Safety net: Claude occasionally omits challengedNodeId from response.
+        // Patch it back from the nodeId we issued the pressure test for.
+        if (!ptResult.challengedNodeId) {
+          ptResult = { ...ptResult, challengedNodeId: nodeId }
+        }
       }
 
-      const newDiff = computeDiff(nodes, regenResult)
-      // Attach the regenResult to the diff so applyDiff has what it needs
-      newDiff._regenResult = regenResult
+      // Validate new shape — if decision field missing, this is the old shape
+      if (!ptResult.decision) {
+        setError('Incompatible response shape — expected "decision" field. Old regeneration result received. Discard and try again.')
+        setStep('inspect')
+        return
+      }
+
+      const newDiff = computeDiff(nodes, ptResult)
+      // Attach full ptResult + raw search evidence to the diff object
+      newDiff._ptResult = ptResult
+      newDiff._rawSearchBlocks = rawSearchBlocks
 
       setDiff(newDiff)
       setStep('inspect')
 
-      // Record refinement in history
+      // Record in refinement history
+      const nodesChanged = ptResult.decision === 'revise_claim' && ptResult.revisedNode
+        ? [ptResult.revisedNode.id, ...(ptResult.updatedDownstream || []).map(n => n.id)]
+        : []
+
       const record = {
         triggeredBy:    nodeId,
+        decision:       ptResult.decision,
         userNote:       challengedNode.userNote,
         timestamp:      Date.now(),
         policyOverride: null,
-        nodesChanged:   [regenResult.revisedNode.id, ...(regenResult.updatedDownstream || []).map(n => n.id)],
+        nodesChanged,
+        mode,
       }
       setSession(prev => ({
         ...prev,
@@ -171,15 +207,15 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         },
       }))
     } catch (e) {
-      setError('Regeneration failed. Check your API key and try again.')
+      setError(`Pressure test failed: ${e.message}`)
       setStep('inspect')
     }
   }
 
-  // ── Accept diff — apply changes to nodes ─────────────────────
+  // ── Apply assessment — three decision paths ───────────────────
   function handleAcceptDiff() {
-    if (!diff?._regenResult) return
-    const updatedNodes = applyDiff(session.stage1.nodes, diff._regenResult)
+    if (!diff?._ptResult) return
+    const updatedNodes = applyDiff(session.stage1.nodes, diff._ptResult)
     setSession(prev => ({
       ...prev,
       stage1: { ...prev.stage1, nodes: updatedNodes },
@@ -190,6 +226,81 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   // ── Discard diff — keep original nodes, keep challenge status ─
   function handleDiscardDiff() {
     setDiff(null)
+  }
+
+  // ── Run Stage 2 ───────────────────────────────────────────────
+  async function handleRunStage2() {
+    setStep('stage2_generating')
+    setError(null)
+
+    try {
+      let stage2Data
+
+      if (!apiKeySet) {
+        await delay(2000)
+        stage2Data = { ...MOCK_V4_STAGE2 }
+      } else {
+        const ctx = buildStage2ContextPacket(session)
+        const prompt = buildStage2Prompt({
+          entity:           ctx.entity,
+          intent:           ctx.intent,
+          policy:           session.generationPolicy,
+          stage1Summary:    ctx.stage1Summary,
+          acceptedNodes:    ctx.acceptedNodes,
+          refinedNodes:     ctx.refinedNodes,
+          unresolvedNodes:  ctx.unresolvedNodes,
+          openQuestions:    ctx.openQuestions,
+          inferredPatterns: ctx.inferredPatterns,
+        })
+        const { text, rawSearchBlocks } = await callClaudeWithSearch(prompt, 5500, 5)
+        stage2Data = JSON.parse(text)
+        stage2Data._rawSearchBlocks = rawSearchBlocks
+      }
+
+      // Normalise refinedAssertions — ensure userStatus is present
+      stage2Data.refinedAssertions = (stage2Data.refinedAssertions || []).map(r => ({
+        userStatus: 'pending',
+        ...r,
+      }))
+
+      const stage2 = {
+        id:          'stage2_' + Date.now(),
+        stageNumber: 2,
+        generatedAt: Date.now(),
+        ...stage2Data,
+      }
+
+      setSession(prev => ({ ...prev, stage2 }))
+      setStep('stage2')
+    } catch (e) {
+      setError(`Stage 2 generation failed: ${e.message}`)
+      setStep('inspect')
+    }
+  }
+
+  // ── Stage 2 refinement acceptance (proposal only — Stage 1 not mutated) ─────
+  function handleAcceptRefinement(nodeId) {
+    setSession(prev => ({
+      ...prev,
+      stage2: {
+        ...prev.stage2,
+        refinedAssertions: prev.stage2.refinedAssertions.map(r =>
+          r.nodeId === nodeId ? { ...r, userStatus: 'accepted' } : r
+        ),
+      },
+    }))
+  }
+
+  function handleRejectRefinement(nodeId) {
+    setSession(prev => ({
+      ...prev,
+      stage2: {
+        ...prev.stage2,
+        refinedAssertions: prev.stage2.refinedAssertions.map(r =>
+          r.nodeId === nodeId ? { ...r, userStatus: 'rejected' } : r
+        ),
+      },
+    }))
   }
 
   // ── Render ───────────────────────────────────────────────────
@@ -265,6 +376,18 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           </div>
         )}
 
+        {(step === 'stage2_generating') && (
+          <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Running Stage 2 research expansion</div>
+            <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', marginBottom: 20 }}>
+              Retrieving evidence · comparing competitors · grounding assertions
+            </div>
+            <div style={{ height: 2, background: 'var(--border)', borderRadius: 1, maxWidth: 240, margin: '0 auto' }}>
+              <div style={{ height: '100%', background: 'linear-gradient(90deg,var(--a4),var(--a2))', borderRadius: 1, width: '70%', animation: 'pulse 1.5s ease-in-out infinite' }} />
+            </div>
+          </div>
+        )}
+
         {(step === 'inspect' || step === 'regenerating') && session.stage1 && (
           <Stage1Panel
             session={session}
@@ -273,8 +396,21 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             onNodeStatusChange={handleNodeStatusChange}
             onChallengeClick={handleChallengeClick}
             onRegenNode={handleRegenNode}
+            onNeedsReviewClick={handleNeedsReviewClick}
             onAcceptDiff={handleAcceptDiff}
             onDiscardDiff={handleDiscardDiff}
+            onRunStage2={handleRunStage2}
+            onViewStage2={() => setStep('stage2')}
+          />
+        )}
+
+        {step === 'stage2' && session.stage2 && (
+          <Stage2Panel
+            session={session}
+            stage2={session.stage2}
+            onAcceptRefinement={handleAcceptRefinement}
+            onRejectRefinement={handleRejectRefinement}
+            onBackToStage1={() => setStep('inspect')}
           />
         )}
       </div>
@@ -323,10 +459,12 @@ function delay(ms) {
 
 function StepBadge({ step }) {
   const labels = {
-    intent:       { label: 'Intent capture',   color: 'var(--a4)' },
-    generating:   { label: 'Generating…',       color: 'var(--a2)' },
-    inspect:      { label: 'Inspect & refine',  color: 'var(--accent)' },
-    regenerating: { label: 'Regenerating…',     color: '#fb923c' },
+    intent:            { label: 'Intent capture',         color: 'var(--a4)' },
+    generating:        { label: 'Generating…',             color: 'var(--a2)' },
+    inspect:           { label: 'Inspect & refine',        color: 'var(--accent)' },
+    regenerating:      { label: 'Pressure testing…',       color: '#fb923c' },
+    stage2_generating: { label: 'Stage 2 — retrieving…',  color: 'var(--a2)' },
+    stage2:            { label: 'Stage 2 — evidence',      color: 'var(--a4)' },
   }
   const cfg = labels[step] || labels.intent
   return (

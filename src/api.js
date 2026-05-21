@@ -20,9 +20,14 @@ export async function callClaude(prompt, maxTokens = 3500) {
   }
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
     }),
@@ -30,7 +35,178 @@ export async function callClaude(prompt, maxTokens = 3500) {
   if (!res.ok) throw new Error(`API error: ${res.status}`)
   const data = await res.json()
   const raw = data.content.map(c => c.text || '').join('')
-  return raw.replace(/```json|```/g, '').trim()
+  return extractJsonObject(raw) || raw.replace(/```json|```/g, '').trim()
+}
+
+/**
+ * callClaudeWithSearch — pressure-test API call.
+ *
+ * Adds Anthropic's built-in web_search tool (server-executed, no separate key).
+ * max_uses: 3 is enforced at the API level — hard cap, not a prompt instruction.
+ *
+ * Returns { text: string, rawSearchBlocks: array }
+ *   text           — the JSON PressureTestResult Claude produced
+ *   rawSearchBlocks — tool_result content blocks from the API response,
+ *                     used to cross-validate citations against real retrieved evidence.
+ *
+ * If the tool type string is unsupported by the model, the API returns an HTTP error
+ * which surfaces as retrieval_failed — no fake evidence is ever produced.
+ */
+export async function callClaudeWithSearch(prompt, maxTokens = 3500, maxSearches = 3) {
+  if (!hasApiKey()) {
+    throw new Error('No API key configured. Set VITE_ANTHROPIC_API_KEY in .env.local')
+  }
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: maxTokens,
+      tools: [
+        {
+          type: 'web_search_20250305',
+          name: 'web_search',
+          max_uses: maxSearches,
+        },
+      ],
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.status.toString())
+    throw new Error(`API error ${res.status}: ${errText}`)
+  }
+  const data = await res.json()
+  return parseSearchResponse(data)
+}
+
+/**
+ * extractJsonObject — strips markdown fences (```json … ``` or ``` … ```)
+ * then scans the text for the first bracket-balanced JSON object that passes
+ * JSON.parse.  Trying each candidate in order means prose containing
+ * incidental {…} pairs before the real JSON does not produce a false match.
+ * Returns the raw JSON string, or null if nothing parseable is found.
+ */
+function extractJsonObject(text) {
+  const cleaned = text.replace(/```json\s*/g, '').replace(/```/g, '')
+  let searchFrom = 0
+  while (searchFrom < cleaned.length) {
+    const start = cleaned.indexOf('{', searchFrom)
+    if (start === -1) return null
+    // Bracket-match to the paired closing brace
+    let depth = 0
+    let end = -1
+    for (let i = start; i < cleaned.length; i++) {
+      const ch = cleaned[i]
+      if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) { end = i; break }
+      }
+    }
+    if (end === -1) return null                    // unclosed object — give up
+    const candidate = cleaned.slice(start, end + 1)
+    try {
+      JSON.parse(candidate)
+      return candidate                             // valid JSON — use it
+    } catch {
+      searchFrom = start + 1                       // not JSON — try next '{'
+    }
+  }
+  return null
+}
+
+/**
+ * parseSearchResponse — extracts structured evidence and final JSON text
+ * from an Anthropic response that may contain web_search tool content blocks.
+ *
+ * Content block types handled:
+ *   "text"                   — Claude's prose preamble or final JSON output
+ *   "tool_use"               — Claude's search query
+ *   "tool_result"            — standard tool result wrapper
+ *   "web_search_tool_result" — Anthropic's actual web_search block type (distinct from tool_result)
+ *
+ * JSON extraction: iterates text blocks in REVERSE (last block first — that is
+ * where Claude always emits the final JSON).  For each block, markdown fences
+ * (```json … ```) are stripped, then extractJsonObject scans for the first
+ * bracket-balanced object that passes JSON.parse.  Fenced responses, responses
+ * with trailing prose, and responses where prose precedes the JSON are all
+ * handled correctly.  retrieval_failed is produced only when no text block
+ * yields a parseable JSON object.
+ *
+ * If no JSON block is found at all, returns a synthetic retrieval_failed
+ * PressureTestResult so the DiffView always renders and the user sees a clear
+ * error state instead of a silent disappearance.
+ *
+ * Returns { text: string, rawSearchBlocks: RawSearchBlock[] }
+ */
+function parseSearchResponse(data) {
+  const blocks = data.content || []
+  const rawSearchBlocks = []
+  const textParts = []
+  const pendingQueries = []
+
+  for (const block of blocks) {
+    if (block.type === 'tool_use' && block.name === 'web_search') {
+      pendingQueries.push(block.input?.query || '')
+    } else if (block.type === 'tool_result' || block.type === 'web_search_tool_result') {
+      // Handle both standard tool_result and Anthropic's web_search_tool_result block type
+      rawSearchBlocks.push({
+        type: 'search_result',
+        queries: [...pendingQueries],
+        content: block.content || [],
+      })
+      pendingQueries.length = 0
+    } else if (block.type === 'text') {
+      textParts.push(block.text || '')
+    }
+  }
+
+  // Find the last text block that contains a complete JSON object.
+  // Uses bracket-matching so trailing prose after the closing '}' is stripped.
+  // Earlier text blocks may be intro prose ("I'll search for…") and must not be included.
+  let jsonText = ''
+  for (let i = textParts.length - 1; i >= 0; i--) {
+    const extracted = extractJsonObject(textParts[i])
+    if (extracted) {
+      jsonText = extracted
+      break
+    }
+  }
+
+  // If no JSON block was found, build a synthetic retrieval_failed result.
+  // challengedNodeId is null here — Stage1Panel handles this by rendering the
+  // DiffView above the node list as a fallback when no node ID matches.
+  if (!jsonText) {
+    const preview = textParts.join(' ').trim().slice(0, 200) || '(empty response)'
+    jsonText = JSON.stringify({
+      decision: 'retrieval_failed',
+      challengedNodeId: null,
+      challengeAssessment: `The pressure test returned a response that could not be parsed as a valid assessment. Response preview: "${preview}"`,
+      evidenceSummary: '',
+      evidenceNeeded: '',
+      confidenceChangeReason: '',
+      qualityDelta: {
+        improvedPrecision: false, reducedOvergeneralization: false,
+        improvedSegmentation: false, improvedOperationalPlausibility: false,
+        reducedConfidenceAppropriately: false, preservedStrongOriginalReasoning: false,
+        surfacedEvidenceGap: false, improvedDecisionUsefulness: false, notes: '',
+      },
+      retrievedEvidence: [],
+      inlineCitations: [],
+      suggestedResearchQueries: [],
+      revisedNode: null,
+      updatedDownstream: [],
+      preservedDownstreamIds: [],
+    })
+  }
+
+  return { text: jsonText, rawSearchBlocks }
 }
 
 export function buildPrompt({ domain, lens, stage, context, role, background, focuses, existingPatterns }) {

@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import NodeCard from './NodeCard'
 import DiffView from './DiffView'
 import { policyLabel } from '../v4utils'
@@ -10,11 +10,21 @@ export default function Stage1Panel({
   onNodeStatusChange,
   onChallengeClick,
   onRegenNode,
+  onNeedsReviewClick,
   onAcceptDiff,
   onDiscardDiff,
+  onRunStage2,
+  onViewStage2,
 }) {
   const { stage1, generationPolicy, entity, intent } = session
   const nodes = stage1?.nodes || []
+
+  // Auto-scroll to assessment panel whenever a new diff arrives
+  useEffect(() => {
+    if (!diff) return
+    const el = document.getElementById('pt-assessment-panel')
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [diff])
 
   const accepted     = nodes.filter(n => n.userStatus === 'accepted').length
   const challenged   = nodes.filter(n => n.userStatus === 'challenged').length
@@ -74,22 +84,32 @@ export default function Stage1Panel({
         </span>
       </div>
 
-      {/* Diff view (shown between inspection bar and nodes when a regen result is available) */}
-      {diff && (
-        <DiffView diff={diff} onAccept={onAcceptDiff} onDiscard={onDiscardDiff} />
+      {/* DiffView fallback: rendered above the list only when challengedNodeId
+          is null or does not match any node (e.g. synthetic retrieval_failed). */}
+      {diff && !nodes.some(n => n.id === diff._ptResult?.challengedNodeId) && (
+        <div id="pt-assessment-panel">
+          <DiffView diff={diff} onAccept={onAcceptDiff} onDiscard={onDiscardDiff} />
+        </div>
       )}
 
-      {/* Node list */}
+      {/* Node list — assessment panel rendered directly below the challenged node */}
       <div style={{ marginBottom: 14 }}>
         {nodes.map(node => (
-          <NodeCard
-            key={node.id}
-            node={node}
-            allNodes={nodes}
-            onStatusChange={onNodeStatusChange}
-            onChallengeClick={onChallengeClick}
-            onRegenClick={onRegenNode}
-          />
+          <React.Fragment key={node.id}>
+            <NodeCard
+              node={node}
+              allNodes={nodes}
+              onStatusChange={onNodeStatusChange}
+              onChallengeClick={onChallengeClick}
+              onRegenClick={onRegenNode}
+              onNeedsReviewClick={onNeedsReviewClick}
+            />
+            {diff && diff._ptResult?.challengedNodeId === node.id && (
+              <div id="pt-assessment-panel">
+                <DiffView diff={diff} onAccept={onAcceptDiff} onDiscard={onDiscardDiff} />
+              </div>
+            )}
+          </React.Fragment>
         ))}
       </div>
 
@@ -124,23 +144,31 @@ export default function Stage1Panel({
           </div>
           {stage1.inferredPatterns.map((p, i) => (
             <div key={i} style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', marginBottom: 2 }}>{p.title}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{p.title}</div>
+                {p.transferability && (
+                  <span style={{
+                    fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+                    color: 'var(--muted)', background: 'var(--s2)', border: '1px solid var(--border)',
+                  }}>
+                    {p.transferability}
+                  </span>
+                )}
+              </div>
               <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.65 }}>{p.insight}</div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Deeper stages placeholder */}
-      <div style={{
-        padding: '10px 14px', background: 'var(--s2)',
-        border: '1px solid var(--border)', borderRadius: 'var(--r)',
-        fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted)',
-        display: 'flex', alignItems: 'center', gap: 7,
-      }}>
-        <i className="ti ti-lock" style={{ fontSize: 12 }} />
-        Stage 2–5 unlocks after the Stage 1 loop is proven — accept or challenge nodes above first
-      </div>
+      {/* Stage 2 trigger */}
+      <Stage2Trigger
+        hasStage2={!!session.stage2}
+        reviewedCount={accepted + challenged + rejected + needsReview}
+        nodeCount={nodes.length}
+        onRun={onRunStage2}
+        onView={onViewStage2}
+      />
 
       {/* Regeneration loading indicator */}
       {regenerating && (
@@ -151,8 +179,8 @@ export default function Stage1Panel({
           color: '#fb923c', display: 'flex', alignItems: 'center', gap: 8,
           boxShadow: '0 4px 20px rgba(0,0,0,.4)',
         }}>
-          <i className="ti ti-refresh" style={{ animation: 'spin 1s linear infinite', fontSize: 13 }} />
-          Regenerating impacted nodes…
+          <i className="ti ti-flask" style={{ animation: 'spin 1s linear infinite', fontSize: 13 }} />
+          Pressure testing — retrieving evidence…
         </div>
       )}
     </div>
@@ -169,5 +197,82 @@ function Chip({ label, color }) {
     }}>
       {label}
     </span>
+  )
+}
+
+function Stage2Trigger({ hasStage2, reviewedCount, nodeCount, onRun, onView }) {
+  const canRun = reviewedCount > 0
+
+  if (hasStage2) {
+    return (
+      <div style={{
+        padding: '10px 14px', background: 'var(--s2)',
+        border: '1px solid var(--accent)', borderRadius: 'var(--r)',
+        display: 'flex', alignItems: 'center', gap: 10,
+      }}>
+        <i className="ti ti-chart-dots-2" style={{ fontSize: 13, color: 'var(--accent)' }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600, color: 'var(--accent)' }}>
+            Stage 2 — Research Expansion
+          </div>
+          <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginTop: 1 }}>
+            Evidence consolidated and competitors mapped
+          </div>
+        </div>
+        <button
+          onClick={onView}
+          style={{
+            fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+            padding: '5px 12px', borderRadius: 5, cursor: 'pointer',
+            background: 'var(--accent)', color: '#fff', border: 'none',
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}
+        >
+          View Stage 2
+          <i className="ti ti-arrow-right" style={{ fontSize: 10 }} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{
+      padding: '10px 14px', background: 'var(--s2)',
+      border: `1px solid ${canRun ? 'var(--border2)' : 'var(--border)'}`,
+      borderRadius: 'var(--r)',
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <i
+        className={`ti ${canRun ? 'ti-chart-dots-2' : 'ti-lock'}`}
+        style={{ fontSize: 13, color: canRun ? 'var(--muted2)' : 'var(--muted)' }}
+      />
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600, color: canRun ? 'var(--muted2)' : 'var(--muted)' }}>
+          Stage 2 — Research Expansion
+        </div>
+        <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginTop: 1 }}>
+          {canRun
+            ? `${reviewedCount} of ${nodeCount} nodes reviewed — ready to deepen with live retrieval`
+            : 'Accept or challenge nodes above to unlock Stage 2'}
+        </div>
+      </div>
+      <button
+        onClick={canRun ? onRun : undefined}
+        disabled={!canRun}
+        style={{
+          fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+          padding: '5px 12px', borderRadius: 5,
+          cursor: canRun ? 'pointer' : 'not-allowed',
+          background: canRun ? 'var(--a2)' : 'var(--s2)',
+          color: canRun ? '#fff' : 'var(--muted)',
+          border: `1px solid ${canRun ? 'var(--a2)' : 'var(--border)'}`,
+          opacity: canRun ? 1 : 0.6,
+          display: 'flex', alignItems: 'center', gap: 5,
+        }}
+      >
+        <i className="ti ti-player-play" style={{ fontSize: 10 }} />
+        Run Stage 2
+      </button>
+    </div>
   )
 }

@@ -9,7 +9,7 @@ const STATUS_ACTIONS = [
   { status: 'rejected',     label: 'Reject',        icon: 'ti-x' },
 ]
 
-export default function NodeCard({ node, allNodes, onStatusChange, onChallengeClick, onRegenClick }) {
+export default function NodeCard({ node, allNodes, onStatusChange, onChallengeClick, onRegenClick, onNeedsReviewClick }) {
   const nodeType  = NODE_TYPES[node.type]         || NODE_TYPES.finding
   const statusCfg = NODE_STATUS_CONFIG[node.userStatus] || NODE_STATUS_CONFIG.pending
   const { pct, color } = confPct(node.confidence)
@@ -28,6 +28,8 @@ export default function NodeCard({ node, allNodes, onStatusChange, onChallengeCl
   function handleAction(status) {
     if (status === 'challenged') {
       onChallengeClick(node.id)
+    } else if (status === 'needs_review') {
+      onNeedsReviewClick(node.id)
     } else {
       onStatusChange(node.id, status)
     }
@@ -143,7 +145,7 @@ export default function NodeCard({ node, allNodes, onStatusChange, onChallengeCl
           </button>
         ))}
 
-        {/* Per-node regen button — only shown when this node is challenged */}
+        {/* Pressure test button — only shown when this node is challenged */}
         {node.userStatus === 'challenged' && onRegenClick && (
           <button
             onClick={() => onRegenClick(node.id)}
@@ -155,7 +157,7 @@ export default function NodeCard({ node, allNodes, onStatusChange, onChallengeCl
               display: 'flex', alignItems: 'center', gap: 3,
             }}
           >
-            <i className="ti ti-refresh" style={{ fontSize: 9 }} /> Regen this node
+            <i className="ti ti-flask" style={{ fontSize: 9 }} /> Pressure test
           </button>
         )}
       </div>
