@@ -617,7 +617,8 @@ ${policyBlock}
 STAGE 2 MISSION:
 Answer: "What current evidence, competitor behavior, emerging entrants, adjacent capabilities, and market signals strengthen, weaken, qualify, or materially reshape the Stage 1 assertions?"
 
-RETRIEVAL STRATEGY (use web_search, max 5 queries total):
+RETRIEVAL STRATEGY (use web_search, max 5 queries — target 3):
+Execute 3 highly targeted searches. Stop searching once 3 or more meaningful evidence items have been retrieved. Prefer precision over coverage — unused search budget preserves output token headroom for the JSON.
 Prioritize searches toward:
 1. Load-bearing assertions with low confidence or unresolved status
 2. Open questions from Stage 1
@@ -631,36 +632,46 @@ Do NOT:
 - Cite sources not retrieved in this session
 - Overstate certainty from limited or ambiguous results
 - Produce comprehensive market surveys
+- Include search narration, preamble, or any prose before or after the JSON output
+- Summarize every retrieved source — include only the single most relevant snippet per item
 
-CONSTRAINTS ON OUTPUT:
-- evidenceConsolidation: max 5 items — load-bearing assertions only
-- competitorMap: max 4 — strategically contextual, not exhaustive
-- emergingEntrants: max 3 — only when tied to assertions, gaps, or strategic tensions
-- adjacencyOpportunities: max 3 — tied to assertions, not speculative
-- refinedAssertions: max 4 — only where evidence materially changes interpretation
-- contradictionMap: max 4 — preserve genuine tensions; do not force resolution
-- unresolvedQuestions: max 5 — most strategically important only
+CONSTRAINTS ON OUTPUT (hard limits — do not exceed):
+- evidenceConsolidation: max 3 items; max 2 sources per item
+- competitorMap: max 3
+- emergingEntrants: 3–5 items
+- adjacencyOpportunities: 3–5 items
+- refinedAssertions: max 3
+- contradictionMap: max 3
+- unresolvedQuestions: 3–5 items
+- stage3ReadinessSummary: max 3 items per array
+- recommendedNextActions: 3–5 items
+- Label/name/badge fields (name, type, refinementType, relationship, tensionType, resolution, confidenceChange): ≤5 words or enum values only.
+- Summary/label string fields (segmentFit, capabilityGaps, strategicDivergence, implications, evidenceSummary, reason, resolutionNote, whatChanged, strongestEvidence, weakestAreas, dominantTensions, likelyDirection, area): ≤20 words. Concise phrases, no paragraphs.
+- Analytical narrative fields (capability, strategicImplication, partnershipLogic, acquisitionLogic, buildVsBuy, risks): ≤60 words. Complete sentences allowed.
+- unresolvedQuestions and recommendedNextActions: ≤60 words each. Must be actionable and specific.
+- stage3ReadinessSummary items: ≤25 words each — max 3 per array. Explain the signal, do not just label it.
+- Omit a section entirely (empty array) rather than padding with weak findings.
 
-Return ONLY valid JSON, no markdown, no backticks:
+Return ONLY valid JSON. Output MUST begin with { and end with }. No preamble, no narration, no markdown, no backticks:
 {
   "summary": {
-    "whatChanged": "1-2 sentences: what Stage 2 materially changed vs Stage 1",
-    "strongestEvidence": "1-2 sentences: strongest evidence found",
-    "weakestAreas": "1-2 sentences: what still lacks grounding",
-    "dominantTensions": "1-2 sentences: most important unresolved strategic tension",
-    "likelyDirection": "1-2 sentences: most defensible strategic direction — clearly labeled as inference"
+    "whatChanged": "≤20 words: what Stage 2 materially changed vs Stage 1",
+    "strongestEvidence": "≤20 words: strongest evidence found",
+    "weakestAreas": "≤20 words: what still lacks grounding",
+    "dominantTensions": "≤20 words: most important unresolved tension",
+    "likelyDirection": "≤20 words: most defensible direction — label as inference"
   },
   "evidenceConsolidation": [
     {
       "nodeId": "<Stage 1 node id>",
       "nodeStatement": "<exact original assertion>",
-      "evidenceSummary": "what was found and how it relates to this assertion",
+      "evidenceSummary": "≤20 words: what was found and how it relates",
       "relationship": "supports|contradicts|qualifies|unresolved",
       "sources": [
         {
           "title": "page or article title",
           "url": "exact URL from search",
-          "snippet": "verbatim excerpt — max 60 words",
+          "snippet": "verbatim excerpt — max 25 words",
           "relationship": "supports|contradicts|qualifies"
         }
       ]
@@ -670,28 +681,28 @@ Return ONLY valid JSON, no markdown, no backticks:
     {
       "name": "competitor name",
       "type": "mature|differentiated|adjacent",
-      "segmentFit": "how well they fit the same customer segment vs the entity",
-      "capabilityGaps": "what they have that entity lacks, or vice versa",
-      "strategicDivergence": "where strategy diverges — pricing, workflow, AI, model",
-      "implications": "what this means for entity — threat, opportunity, or constraint"
+      "segmentFit": "≤15 words",
+      "capabilityGaps": "≤15 words",
+      "strategicDivergence": "≤15 words",
+      "implications": "≤15 words"
     }
   ],
   "emergingEntrants": [
     {
       "name": "entrant name",
       "relevantTo": "<Stage 1 node id or open_question>",
-      "capability": "what capability or workflow shift they represent",
-      "strategicImplication": "why this matters for the entity"
+      "capability": "≤60 words: what this entrant actually does and why it matters here",
+      "strategicImplication": "≤60 words: specific strategic consequence for the entity under analysis"
     }
   ],
   "adjacencyOpportunities": [
     {
       "area": "capability or workflow area",
-      "partnershipLogic": "why partnership makes sense",
-      "acquisitionLogic": "why acquisition might make sense, or null if not applicable",
-      "buildVsBuy": "build vs buy vs partner analysis",
-      "connectedNodeIds": ["<Stage 1 node ids this relates to>"],
-      "risks": "key risks or constraints"
+      "partnershipLogic": "≤60 words: who the natural partner is, why the fit exists, and what it unlocks",
+      "acquisitionLogic": "≤60 words: why acquisition makes strategic sense and what the target would add — or null if not applicable",
+      "buildVsBuy": "≤60 words: concrete build-vs-buy-vs-partner recommendation with rationale",
+      "connectedNodeIds": ["<Stage 1 node ids>"],
+      "risks": "≤60 words: specific execution or market risks for this adjacency"
     }
   ],
   "refinedAssertions": [
@@ -699,35 +710,235 @@ Return ONLY valid JSON, no markdown, no backticks:
       "nodeId": "<Stage 1 node id>",
       "refinementType": "strengthened|narrowed|qualified|weakened|contradicted|unresolved",
       "originalStatement": "<exact original assertion text>",
-      "revisedStatement": "more precise or better-grounded version",
-      "reason": "what evidence drove this refinement",
+      "revisedStatement": "≤30 words — more precise or better-grounded version",
+      "reason": "≤15 words: what evidence drove this",
       "confidenceChange": "increased|decreased|unchanged"
     }
   ],
   "contradictionMap": [
     {
-      "description": "what the tension is",
+      "description": "≤20 words: what the tension is",
       "tensionType": "evidence_conflict|strategic_inconsistency|business_model_tension|pricing_conflict|capability_constraint|compliance_constraint",
       "nodeIds": ["<involved Stage 1 node ids>"],
       "resolution": "unresolved|partial|resolved",
-      "resolutionNote": "why it is or is not resolved — preserve genuine uncertainty"
+      "resolutionNote": "≤15 words"
     }
   ],
   "unresolvedQuestions": [
-    "specific strategically important question that remains unanswered after Stage 2"
+    "≤60 words: specific strategically important question with enough context to be actionable — 3 to 5 items"
   ],
   "stage3ReadinessSummary": {
-    "strongestThemes": ["theme 1", "theme 2"],
-    "unresolvedBlockers": ["what prevents clean Stage 3 synthesis"],
-    "refinedTensions": ["key tensions to carry into Stage 3"],
-    "highConfidenceFindings": ["findings with strong evidence grounding"],
-    "capabilityGaps": ["gaps that affect strategic direction"],
-    "strategicImplications": ["implications worth synthesizing in Stage 3"]
+    "strongestThemes": ["≤25 words each — max 3: explain the signal, not just the label"],
+    "unresolvedBlockers": ["≤25 words each — max 3: explain why it blocks and what resolving it would unlock"],
+    "refinedTensions": ["≤25 words each — max 3: name the two forces in tension and the strategic consequence"],
+    "highConfidenceFindings": ["≤25 words each — max 3: state what is now well-grounded and why it matters for Stage 3"],
+    "capabilityGaps": ["≤25 words each — max 3: name the gap and why it is strategically load-bearing"],
+    "strategicImplications": ["≤25 words each — max 3: one clear implication for Stage 3 framing or focus"]
   },
   "recommendedNextActions": [
-    "specific research action, assertion to revisit, or area to expand"
+    "≤60 words: specific action with rationale — what to do, why it matters, and what it would resolve — 3 to 5 items"
   ]
 }`
+}
+
+// ─── Investigative Pivot ─────────────────────────────────────────────────────
+// Inline Stage 2 refinement layer — no new step.
+// Output: two-layer model — displaySummary (concise) + analysisFoundation (deep).
+// proposedUpdates target existing Stage 2 sections or 'general'.
+
+const PIVOT_FOCUS_DESCRIPTIONS = {
+  contextual_competition:    'Examine how competitor positioning and competitive dynamics reshape or challenge the key assertions in Stage 1.',
+  operational_constraints:   'Surface the practical constraints, implementation barriers, and operational realities that limit or qualify the strategic picture.',
+  adoption_dynamics:         'Analyze user behavior, change management requirements, and demand-side friction that affect whether opportunities or strategies are achievable.',
+  business_model_pressures:  'Interrogate pricing logic, revenue structure, unit economics assumptions, and business model tensions embedded in the current analysis.',
+  emerging_disruption:       'Identify emerging entrants, technology shifts, or market movements that could materially disrupt or accelerate the current strategic direction.',
+  adjacent_capabilities:     'Explore adjacencies — build/buy/partner opportunities, workflow extensions, or capability expansions — that are implied but not yet developed in the Stage 2 analysis.',
+}
+
+export function buildPivotPrompt({
+  entity, intent, policy,
+  stage1Summary, acceptedNodes,
+  stage2,
+  pivotType, pivotTitle,
+  targetNodes,
+  userDirection,
+}) {
+  const policyBlock = renderPolicy(policy)
+  const focusDescription = PIVOT_FOCUS_DESCRIPTIONS[pivotType] || pivotTitle
+
+  const acceptedBlock = (acceptedNodes || []).length > 0
+    ? acceptedNodes.map(n => `  [${n.id}] (${n.type}, ${n.confidence}) "${n.statement}"`).join('\n')
+    : '  None.'
+
+  const targetBlock = (targetNodes || []).length > 0
+    ? targetNodes.map(n => `  [${n.id}] (${n.type}, ${n.confidence}) "${n.statement}"`).join('\n')
+    : '  None specified — apply pivot to the full analytical picture.'
+
+  const competitorBlock = (stage2?.competitorMap || []).length > 0
+    ? (stage2.competitorMap).map(c => `  ${c.name}: ${c.strategicDivergence || c.segmentFit || ''}`).join('\n')
+    : '  None mapped yet.'
+
+  const tensionBlock = (stage2?.contradictionMap || []).length > 0
+    ? (stage2.contradictionMap).map(c => `  ${c.tensionType}: ${c.description}`).join('\n')
+    : '  None mapped yet.'
+
+  const openBlock = (stage2?.unresolvedQuestions || []).length > 0
+    ? (stage2.unresolvedQuestions).map((q, i) => `  ${i + 1}. ${q}`).join('\n')
+    : '  None.'
+
+  const directionBlock = userDirection?.trim()
+    ? `USER DIRECTION:\n"${userDirection.trim()}"\nInterpret this as a research focus, not an instruction to confirm a conclusion.`
+    : 'USER DIRECTION: None specified — apply analytical judgment to the pivot focus.'
+
+  return `You are a rigorous strategic analyst executing an investigative pivot on an existing domain analysis.
+
+ENTITY: "${entity.name}" (${entity.type})
+ANALYST ROLE: ${intent.role}
+RESEARCH INTENT: ${intent.what}${intent.why ? ' — ' + intent.why : ''}
+
+PIVOT TYPE: ${pivotTitle}
+PIVOT FOCUS: ${focusDescription}
+
+${directionBlock}
+
+STAGE 1 SUMMARY:
+${stage1Summary}
+
+ACCEPTED ASSERTIONS (treat as established basis — do not contradict without strong evidence):
+${acceptedBlock}
+
+TARGET NODES (assertions most relevant to this pivot — examine these specifically):
+${targetBlock}
+
+EXISTING COMPETITOR MAP:
+${competitorBlock}
+
+EXISTING CONTRADICTIONS / TENSIONS:
+${tensionBlock}
+
+OPEN QUESTIONS FROM STAGE 2:
+${openBlock}
+
+${policyBlock}
+
+PIVOT MISSION:
+This is a focused research expansion — not a restart. Apply the pivot lens to deepen, challenge, qualify, or extend the existing analysis. Answer: "What does this pivot angle reveal that Stage 2 missed, understated, or left unresolved?"
+
+RETRIEVAL STRATEGY (use web_search, max 6 queries — target 4):
+Execute 4 targeted searches aligned to the pivot focus. Stop early once 4+ useful evidence items are retrieved. Prioritize:
+1. Direct evidence that challenges or qualifies target node assertions
+2. Competitor behavior or case studies relevant to the pivot angle
+3. Market data, adoption evidence, or operational patterns the existing analysis lacks
+4. Adjacent signals — regulatory changes, technology shifts, new entrant moves — that alter the strategic picture
+
+Do NOT:
+- Search for general background on the entity
+- Fabricate sources, URLs, or data points
+- Cite sources not retrieved in this session
+- Produce narrative prose before or after the JSON
+- Pad with low-confidence findings — omit if weak
+
+CONSTRAINTS:
+- proposedUpdates: max 4; each proposedText ≤30 words; rationale ≤20 words
+- unresolvedQuestions: max 3, ≤20 words each
+- stage3Implications: max 3, ≤20 words each
+- additionalSearchSuggestions: max 2, ≤15 words each
+- displaySummary: 2–3 sentences, ≤60 words total — the most important finding, grounded in retrieved evidence
+- analysisFoundation all text fields: ≤30 words each
+- assumptionsToTest: max 3 items, ≤15 words each
+
+Return ONLY valid JSON. Output MUST begin with { and end with }. No preamble, no markdown, no backticks:
+{
+  "displaySummary": "2–3 sentences of the most important finding from this pivot. Grounded in retrieved evidence. ≤60 words.",
+  "analysisFoundation": {
+    "userDirectionInterpretation": "≤30 words: how the user direction was interpreted and applied",
+    "deeperFinding": "≤30 words: the most analytically significant finding beyond the display summary",
+    "evidenceSynthesis": "≤30 words: what the retrieved evidence collectively shows — not source-by-source, but as a pattern",
+    "strategicTension": "≤30 words: the most important unresolved tension this pivot surfaces",
+    "implicationsForStage3": "≤30 words: what this pivot means for Stage 3 framing and focus",
+    "assumptionsToTest": [
+      "≤15 words each — specific assumption the pivot reveals needs validation"
+    ],
+    "recommendedStage3Angle": "≤30 words: the most defensible Stage 3 strategic angle given the pivot findings"
+  },
+  "proposedUpdates": [
+    {
+      "id": "pu_1",
+      "targetSection": "evidenceConsolidation|competitorMap|adjacencyOpportunities|contradictionMap|unresolvedQuestions|stage3ReadinessSummary|general",
+      "updateType": "add|modify|remove",
+      "title": "≤10 words: what this update does",
+      "currentText": "the exact text being modified or replaced, or empty string if updateType is add",
+      "proposedText": "≤30 words: the proposed new or replacement text",
+      "rationale": "≤20 words: why this update is warranted by the pivot evidence",
+      "evidenceBasis": "≤20 words: what retrieved evidence specifically supports this update",
+      "stage3Relevance": "≤20 words: how accepting this update would affect Stage 3 framing",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "unresolvedQuestions": [
+    "≤20 words: specific question this pivot surfaces that Stage 2 did not answer"
+  ],
+  "stage3Implications": [
+    "≤20 words: specific implication for Stage 3 strategic framing"
+  ],
+  "additionalSearchSuggestions": [
+    "≤15 words: a targeted search that would resolve remaining uncertainty"
+  ]
+}`
+}
+
+export const MOCK_PIVOT_RESULT = {
+  displaySummary: 'Competitor behavior reveals a meaningful self-service capability gap that the current analysis understates as a constraint. Two vendors in adjacent segments have successfully converted managed-service clients to self-service tiers within 18 months, suggesting a faster migration path than the current model assumes.',
+  analysisFoundation: {
+    userDirectionInterpretation: 'Interpreted as a request to examine whether managed-service models can transition to platform motions without losing the trust advantage.',
+    deeperFinding: 'The services-to-platform migration pattern is documented in adjacent segments — managed analytics vendors consistently use a "lite self-service tier" as the transition mechanism, not a full platform rebuild.',
+    evidenceSynthesis: 'Retrieved evidence shows competitor migration timelines and conversion rates that are materially faster than the current analysis implies — 12–18 months is typical, not 3–5 years.',
+    strategicTension: 'The core tension is not services vs. scale — it is whether a self-service tier can be introduced without cannibalizing the advisory relationship that drives renewal.',
+    implicationsForStage3: 'Stage 3 should prioritize the services-to-platform migration question and model the self-service tier as a strategic inflection point, not a distant roadmap item.',
+    assumptionsToTest: [
+      'Managed-service clients resist self-service tiers even when available',
+      'Advisory relationships require full managed delivery to sustain trust',
+      'Platform transition requires 3+ years in regulated market segments',
+    ],
+    recommendedStage3Angle: 'Frame Stage 3 around the managed-to-platform migration decision — timing, mechanism, and the risk to advisory revenue during transition.',
+  },
+  proposedUpdates: [
+    {
+      id: 'pu_mock_1',
+      targetSection: 'contradictionMap',
+      updateType: 'modify',
+      title: 'Qualify the services-vs-scale tension',
+      currentText: 'The services-vs-scale tension is a core undocumented strategic bet.',
+      proposedText: 'Services-vs-scale tension may resolve faster than assumed — comparable vendors have introduced self-service tiers within 18 months without abandoning managed delivery.',
+      rationale: 'Competitor evidence contradicts the assumption that this tension is indefinitely unresolvable.',
+      evidenceBasis: 'Two competitor case studies show 12–18 month managed-to-self-service transition timelines.',
+      stage3Relevance: 'Changes the Stage 3 strategic question from "if" to "when and how" for platform migration.',
+      confidence: 'medium',
+    },
+    {
+      id: 'pu_mock_2',
+      targetSection: 'stage3ReadinessSummary',
+      updateType: 'add',
+      title: 'Add self-service tier as strategic inflection',
+      currentText: '',
+      proposedText: 'Self-service tier introduction is a near-term strategic inflection — not a distant roadmap item — based on comparable vendor transition evidence.',
+      rationale: 'Retrieved evidence places the timing decision in the current planning horizon, not a future one.',
+      evidenceBasis: 'Adjacent-segment competitor timelines and conversion rates support an 18-month window.',
+      stage3Relevance: 'Reframes Stage 3 as a migration timing and mechanism question, not a market readiness question.',
+      confidence: 'medium',
+    },
+  ],
+  unresolvedQuestions: [
+    'At what client tenure threshold do managed analytics clients become receptive to self-service tier introduction?',
+    'Does advisory revenue cannibalization actually occur, or is self-service additive in practice?',
+  ],
+  stage3Implications: [
+    'Stage 3 framing should center on the managed-to-platform migration decision and its timing.',
+    'The self-service tier is a near-term strategic lever — model it as a Stage 3 focus area.',
+  ],
+  additionalSearchSuggestions: [
+    'managed analytics vendor self-service tier conversion case study',
+  ],
 }
 
 // ─── Stage 2 mock data — Finlytica demo ──────────────────────────────────────

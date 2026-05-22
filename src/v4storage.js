@@ -15,7 +15,26 @@ function load(key, fallback) {
 }
 
 function persist(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)) } catch {}
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch (err) {
+    console.error('[DomainIQ] Failed to persist to localStorage', { key, error: err })
+  }
+}
+
+function sanitizeSessionForStorage(session) {
+  if (!session?.stage2 || typeof session.stage2 !== 'object') return session
+  const { _rawSearchBlocks, ...safeStage2 } = session.stage2
+  const safePivots = (safeStage2.pivots || []).map(({ _rawSearchBlocks: _rb, ...safePivot }) => safePivot)
+  return { ...session, stage2: { ...safeStage2, pivots: safePivots } }
+}
+
+function sanitizeSessionsForStorage(sessions) {
+  const out = {}
+  for (const [id, session] of Object.entries(sessions)) {
+    out[id] = sanitizeSessionForStorage(session)
+  }
+  return out
 }
 
 // Sessions — each session owns its entity, intent, stage1 result, and policy snapshot.
@@ -25,7 +44,7 @@ export function useSessions() {
   const saveSession = useCallback((id, session) => {
     setSessions(prev => {
       const next = { ...prev, [id]: session }
-      persist(V4_STORAGE_KEYS.SESSIONS, next)
+      persist(V4_STORAGE_KEYS.SESSIONS, sanitizeSessionsForStorage(next))
       return next
     })
   }, [])
