@@ -208,6 +208,21 @@ export function policyLabel(policy) {
   return `${policy.tokenBudget} token · ${policy.skepticismLevel} skepticism · ${policy.maxOutputWords}w`
 }
 
+// Deterministic hash of Stage 1 basis — used to detect when Stage 2 has gone stale.
+// Covers the fields that materially affect Stage 2 output: id, statement, userStatus, confidence.
+// Output is an unsigned 32-bit decimal string; collision risk negligible at realistic node counts.
+export function computeStage1BasisHash(stage1) {
+  const nodes = (stage1?.nodes || [])
+    .map(n => `${n.id}:${n.statement}:${n.userStatus}:${n.confidence}`)
+    .sort()
+    .join('|')
+  let h = 0
+  for (let i = 0; i < nodes.length; i++) {
+    h = Math.imul(31, h) + nodes.charCodeAt(i) | 0
+  }
+  return String(h >>> 0)
+}
+
 // ── Stage 2 pivot system ──────────────────────────────────────────────────────
 //
 // computePivotRecommendations — deterministic scoring from orientation pass data.

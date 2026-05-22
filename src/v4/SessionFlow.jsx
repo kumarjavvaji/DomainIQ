@@ -7,10 +7,12 @@ import {
   buildStage1Prompt,
   buildPressureTestPrompt,
   buildStage2Prompt,
+  buildPivotPrompt,
   MOCK_V4_STAGE1,
   MOCK_PRESSURE_TEST_RESULT_REVISE,
   MOCK_PRESSURE_TEST_RESULT_PRESERVE,
   MOCK_V4_STAGE2,
+  MOCK_PIVOT_RESULT,
 } from '../v4prompts'
 import {
   getDirectDeps,
@@ -21,6 +23,7 @@ import {
   applyDiff,
   computePivotRecommendations,
   recommendTargetNodes,
+  computeStage1BasisHash,
 } from '../v4utils'
 import { callClaude, callClaudeWithSearch } from '../api'
 
@@ -46,6 +49,28 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       setStep('inspect')
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Backfill basis hash for pre-feature sessions — runs once per session id.
+  // If hashes are already present this is a no-op (prev returned unchanged).
+  useEffect(() => {
+    setSession(prev => {
+      if (!prev?.stage1) return prev
+
+      const currentHash      = computeStage1BasisHash(prev.stage1)
+      const needsSessionHash = !prev.stage1BasisHash
+      const needsStage2Hash  = prev.stage2 && !prev.stage2.generatedFromStage1BasisHash
+
+      if (!needsSessionHash && !needsStage2Hash) return prev
+
+      return {
+        ...prev,
+        stage1BasisHash: needsSessionHash ? currentHash : prev.stage1BasisHash,
+        stage2: needsStage2Hash
+          ? { ...prev.stage2, generatedFromStage1BasisHash: currentHash }
+          : prev.stage2,
+      }
+    })
+  }, [session.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Intent submitted → run Stage 1 ──────────────────────────
   async function handleIntentSubmit(entity, intent) {
@@ -104,7 +129,10 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
 
   // ── Node status change (accept / reject / needs_review) ─────
   function handleNodeStatusChange(nodeId, newStatus) {
-    setSession(prev => updateNode(prev, nodeId, { userStatus: newStatus }))
+    setSession(prev => {
+      const updated = updateNode(prev, nodeId, { userStatus: newStatus })
+      return { ...updated, stage1BasisHash: computeStage1BasisHash(updated.stage1) }
+    })
   }
 
   // ── Open challenge modal ─────────────────────────────────────
@@ -225,10 +253,14 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   function handleAcceptDiff() {
     if (!diff?._ptResult) return
     const updatedNodes = applyDiff(session.stage1.nodes, diff._ptResult)
-    setSession(prev => ({
-      ...prev,
-      stage1: { ...prev.stage1, nodes: updatedNodes },
-    }))
+    setSession(prev => {
+      const newStage1 = { ...prev.stage1, nodes: updatedNodes }
+      return {
+        ...prev,
+        stage1:          newStage1,
+        stage1BasisHash: computeStage1BasisHash(newStage1),
+      }
+    })
     setDiff(null)
   }
 
@@ -280,7 +312,13 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         pivots:      [],   // pivot accumulation layer — not part of orientation pass schema
       }
 
-      setSession(prev => ({ ...prev, stage2 }))
+      setSession(prev => ({
+        ...prev,
+        stage2: {
+          ...stage2,
+          generatedFromStage1BasisHash: prev.stage1BasisHash ?? computeStage1BasisHash(prev.stage1),
+        },
+      }))
       setStep('stage2')
     } catch (e) {
       setError(`Stage 2 generation failed: ${e.message}`)
@@ -313,17 +351,189 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     }))
   }
 
-  // ── Run pivot (Milestone 2 stub — wiring in place, execution in Milestone 3) ─
-  // eslint-disable-next-line no-unused-vars
-  function handleRunPivot(pivotType, targetNodeIds) {
-    // Milestone 3: will call callClaudeWithSearch with a typed pivot prompt,
-    // parse the result, and append to session.stage2.pivots[].
-    // No-op in Milestone 2 — scaffold only.
-    void pivotType
-    void targetNodeIds
+  // ── Run pivot ─────────────────────────────────────────────────
+  async function handleRunPivot({ type, title, targetNodeIds, userDirection }) {
+    if ((session.stage2?.pivots || []).some(p => p.type === type && p.status === 'generating')) return
+    const pivotId      = 'pivot_' + Date.now()
+    const snapSession  = session
+
+    setSession(prev => ({
+      ...prev,
+      stage2: {
+        ...prev.stage2,
+        pivots: [...(prev.stage2?.pivots || []), {
+          id:                             pivotId,
+          type,
+          title,
+          targetNodeIds,
+          userDirection:                  userDirection || '',
+          status:                         'generating',
+          generatedAt:                    null,
+          generatedFromStage1BasisHash:   snapSession.stage1BasisHash ?? null,
+          generatedFromStage2GeneratedAt: snapSession.stage2?.generatedAt ?? null,
+          displaySummary:                 '',
+          analysisFoundation:             null,
+          proposedUpdates:                [],
+          unresolvedQuestions:            [],
+          additionalSearchSuggestions:    [],
+          stage3Implications:             [],
+          errorMessage:                   null,
+        }],
+      },
+    }))
+
+    try {
+      let pivotData
+
+      if (!apiKeySet) {
+        await delay(2000)
+        pivotData = { ...MOCK_PIVOT_RESULT }
+      } else {
+        const ctx         = buildStage2ContextPacket(snapSession)
+        const targetNodes = (snapSession.stage1?.nodes || []).filter(n => targetNodeIds.includes(n.id))
+        const prompt      = buildPivotPrompt({
+          entity:        ctx.entity,
+          intent:        ctx.intent,
+          policy:        snapSession.generationPolicy,
+          stage1Summary: ctx.stage1Summary,
+          acceptedNodes: ctx.acceptedNodes,
+          stage2:        snapSession.stage2,
+          pivotType:     type,
+          pivotTitle:    title,
+          targetNodes,
+          userDirection: userDirection || '',
+        })
+        const { text, rawSearchBlocks } = await callClaudeWithSearch(prompt, 7000, 6)
+        pivotData = safeParsePivotJson(text)
+        pivotData._rawSearchBlocks = rawSearchBlocks
+      }
+
+      const proposedUpdates = (pivotData.proposedUpdates || []).map((u, i) => ({
+        id:              u.id || `pu_${pivotId}_${i}`,
+        targetSection:   u.targetSection || 'general',
+        updateType:      u.updateType || 'modify',
+        title:           u.title || '',
+        currentText:     u.currentText || '',
+        proposedText:    u.proposedText || '',
+        rationale:       u.rationale || '',
+        evidenceBasis:   u.evidenceBasis || '',
+        stage3Relevance: u.stage3Relevance || '',
+        confidence:      u.confidence || 'medium',
+        status:          'proposed',
+        userNote:        null,
+        userRefinedText: null,
+        decidedAt:       null,
+      }))
+
+      const af = pivotData.analysisFoundation || {}
+      const analysisFoundation = {
+        userDirectionInterpretation: af.userDirectionInterpretation || '',
+        deeperFinding:               af.deeperFinding || '',
+        evidenceSynthesis:           af.evidenceSynthesis || '',
+        strategicTension:            af.strategicTension || '',
+        implicationsForStage3:       af.implicationsForStage3 || '',
+        assumptionsToTest:           Array.isArray(af.assumptionsToTest) ? af.assumptionsToTest : [],
+        recommendedStage3Angle:      af.recommendedStage3Angle || '',
+      }
+
+      setSession(prev => ({
+        ...prev,
+        stage2: {
+          ...prev.stage2,
+          pivots: (prev.stage2?.pivots || []).map(p =>
+            p.id !== pivotId ? p : {
+              ...p,
+              status:                      'complete',
+              generatedAt:                 new Date().toISOString(),
+              displaySummary:              pivotData.displaySummary || '',
+              analysisFoundation,
+              proposedUpdates,
+              unresolvedQuestions:         pivotData.unresolvedQuestions || [],
+              additionalSearchSuggestions: pivotData.additionalSearchSuggestions || [],
+              stage3Implications:          pivotData.stage3Implications || [],
+              _rawSearchBlocks:            pivotData._rawSearchBlocks || [],
+              errorMessage:                null,
+            }
+          ),
+        },
+      }))
+    } catch (e) {
+      setSession(prev => ({
+        ...prev,
+        stage2: {
+          ...prev.stage2,
+          pivots: (prev.stage2?.pivots || []).map(p =>
+            p.id !== pivotId ? p : { ...p, status: 'error', errorMessage: e.message }
+          ),
+        },
+      }))
+    }
+  }
+
+  // ── Pivot update decisions ────────────────────────────────────
+  function handleAcceptPivotUpdate(pivotType, updateId) {
+    setSession(prev => ({
+      ...prev,
+      stage2: {
+        ...prev.stage2,
+        pivots: (prev.stage2?.pivots || []).map(p =>
+          p.type !== pivotType ? p : {
+            ...p,
+            proposedUpdates: p.proposedUpdates.map(u =>
+              u.id !== updateId ? u : { ...u, status: 'accepted', decidedAt: new Date().toISOString() }
+            ),
+          }
+        ),
+      },
+    }))
+  }
+
+  function handleRefinePivotUpdate(pivotType, updateId, userRefinedText) {
+    setSession(prev => ({
+      ...prev,
+      stage2: {
+        ...prev.stage2,
+        pivots: (prev.stage2?.pivots || []).map(p =>
+          p.type !== pivotType ? p : {
+            ...p,
+            proposedUpdates: p.proposedUpdates.map(u =>
+              u.id !== updateId ? u : {
+                ...u,
+                status:          'refined',
+                userRefinedText,
+                decidedAt:       new Date().toISOString(),
+              }
+            ),
+          }
+        ),
+      },
+    }))
+  }
+
+  function handleRejectPivotUpdate(pivotType, updateId) {
+    setSession(prev => ({
+      ...prev,
+      stage2: {
+        ...prev.stage2,
+        pivots: (prev.stage2?.pivots || []).map(p =>
+          p.type !== pivotType ? p : {
+            ...p,
+            proposedUpdates: p.proposedUpdates.map(u =>
+              u.id !== updateId ? u : { ...u, status: 'rejected', decidedAt: new Date().toISOString() }
+            ),
+          }
+        ),
+      },
+    }))
   }
 
   // ── Render ───────────────────────────────────────────────────
+  const isStage2Stale = !!(
+    session.stage1BasisHash &&
+    session.stage2?.generatedFromStage1BasisHash &&
+    session.stage1BasisHash !== session.stage2.generatedFromStage1BasisHash
+  )
+
   const challengingNode = challengingNodeId
     ? session.stage1?.nodes.find(n => n.id === challengingNodeId)
     : null
@@ -428,10 +638,14 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           <Stage2Panel
             session={session}
             stage2={session.stage2}
+            isStale={isStage2Stale}
             onAcceptRefinement={handleAcceptRefinement}
             onRejectRefinement={handleRejectRefinement}
             onBackToStage1={() => setStep('inspect')}
             onRunPivot={handleRunPivot}
+            onAcceptPivotUpdate={handleAcceptPivotUpdate}
+            onRefinePivotUpdate={handleRefinePivotUpdate}
+            onRejectPivotUpdate={handleRejectPivotUpdate}
             onRerunStage2={handleRunStage2}
           />
         )}
@@ -450,6 +664,27 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function safeParsePivotJson(text) {
+  try { return JSON.parse(text) } catch (_) {}
+  const stripped = text.replace(/```json|```/g, '').trim()
+  try { return JSON.parse(stripped) } catch (_) {}
+  const start = stripped.indexOf('{')
+  if (start !== -1) {
+    let depth = 0
+    for (let i = start; i < stripped.length; i++) {
+      if (stripped[i] === '{') depth++
+      else if (stripped[i] === '}') {
+        depth--
+        if (depth === 0) {
+          try { return JSON.parse(stripped.slice(start, i + 1)) } catch (_) {}
+          break
+        }
+      }
+    }
+  }
+  throw new Error('Could not extract valid JSON from pivot response')
+}
 
 function buildNewSession(id, policy) {
   return {

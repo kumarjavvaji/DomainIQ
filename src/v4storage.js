@@ -25,7 +25,8 @@ function persist(key, value) {
 function sanitizeSessionForStorage(session) {
   if (!session?.stage2 || typeof session.stage2 !== 'object') return session
   const { _rawSearchBlocks, ...safeStage2 } = session.stage2
-  return { ...session, stage2: safeStage2 }
+  const safePivots = (safeStage2.pivots || []).map(({ _rawSearchBlocks: _rb, ...safePivot }) => safePivot)
+  return { ...session, stage2: { ...safeStage2, pivots: safePivots } }
 }
 
 function sanitizeSessionsForStorage(sessions) {
