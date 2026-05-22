@@ -617,7 +617,8 @@ ${policyBlock}
 STAGE 2 MISSION:
 Answer: "What current evidence, competitor behavior, emerging entrants, adjacent capabilities, and market signals strengthen, weaken, qualify, or materially reshape the Stage 1 assertions?"
 
-RETRIEVAL STRATEGY (use web_search, max 5 queries total):
+RETRIEVAL STRATEGY (use web_search, max 5 queries — target 3):
+Execute 3 highly targeted searches. Stop searching once 3 or more meaningful evidence items have been retrieved. Prefer precision over coverage — unused search budget preserves output token headroom for the JSON.
 Prioritize searches toward:
 1. Load-bearing assertions with low confidence or unresolved status
 2. Open questions from Stage 1
@@ -631,36 +632,43 @@ Do NOT:
 - Cite sources not retrieved in this session
 - Overstate certainty from limited or ambiguous results
 - Produce comprehensive market surveys
+- Include search narration, preamble, or any prose before or after the JSON output
+- Summarize every retrieved source — include only the single most relevant snippet per item
 
-CONSTRAINTS ON OUTPUT:
-- evidenceConsolidation: max 5 items — load-bearing assertions only
-- competitorMap: max 4 — strategically contextual, not exhaustive
-- emergingEntrants: max 3 — only when tied to assertions, gaps, or strategic tensions
-- adjacencyOpportunities: max 3 — tied to assertions, not speculative
-- refinedAssertions: max 4 — only where evidence materially changes interpretation
-- contradictionMap: max 4 — preserve genuine tensions; do not force resolution
-- unresolvedQuestions: max 5 — most strategically important only
+CONSTRAINTS ON OUTPUT (hard limits — do not exceed):
+- evidenceConsolidation: max 3 items; max 2 sources per item
+- competitorMap: max 3
+- emergingEntrants: max 2
+- adjacencyOpportunities: max 2
+- refinedAssertions: max 3
+- contradictionMap: max 3
+- unresolvedQuestions: max 3
+- stage3ReadinessSummary: max 2 items per array
+- recommendedNextActions: max 3
+- All string fields: ≤20 words. No paragraphs. Concise phrases only.
+- stage3ReadinessSummary items: ≤10 words each — max 2 per array.
+- Omit a section entirely (empty array) rather than padding with weak findings.
 
-Return ONLY valid JSON, no markdown, no backticks:
+Return ONLY valid JSON. Output MUST begin with { and end with }. No preamble, no narration, no markdown, no backticks:
 {
   "summary": {
-    "whatChanged": "1-2 sentences: what Stage 2 materially changed vs Stage 1",
-    "strongestEvidence": "1-2 sentences: strongest evidence found",
-    "weakestAreas": "1-2 sentences: what still lacks grounding",
-    "dominantTensions": "1-2 sentences: most important unresolved strategic tension",
-    "likelyDirection": "1-2 sentences: most defensible strategic direction — clearly labeled as inference"
+    "whatChanged": "≤20 words: what Stage 2 materially changed vs Stage 1",
+    "strongestEvidence": "≤20 words: strongest evidence found",
+    "weakestAreas": "≤20 words: what still lacks grounding",
+    "dominantTensions": "≤20 words: most important unresolved tension",
+    "likelyDirection": "≤20 words: most defensible direction — label as inference"
   },
   "evidenceConsolidation": [
     {
       "nodeId": "<Stage 1 node id>",
       "nodeStatement": "<exact original assertion>",
-      "evidenceSummary": "what was found and how it relates to this assertion",
+      "evidenceSummary": "≤20 words: what was found and how it relates",
       "relationship": "supports|contradicts|qualifies|unresolved",
       "sources": [
         {
           "title": "page or article title",
           "url": "exact URL from search",
-          "snippet": "verbatim excerpt — max 60 words",
+          "snippet": "verbatim excerpt — max 25 words",
           "relationship": "supports|contradicts|qualifies"
         }
       ]
@@ -670,28 +678,28 @@ Return ONLY valid JSON, no markdown, no backticks:
     {
       "name": "competitor name",
       "type": "mature|differentiated|adjacent",
-      "segmentFit": "how well they fit the same customer segment vs the entity",
-      "capabilityGaps": "what they have that entity lacks, or vice versa",
-      "strategicDivergence": "where strategy diverges — pricing, workflow, AI, model",
-      "implications": "what this means for entity — threat, opportunity, or constraint"
+      "segmentFit": "≤15 words",
+      "capabilityGaps": "≤15 words",
+      "strategicDivergence": "≤15 words",
+      "implications": "≤15 words"
     }
   ],
   "emergingEntrants": [
     {
       "name": "entrant name",
       "relevantTo": "<Stage 1 node id or open_question>",
-      "capability": "what capability or workflow shift they represent",
-      "strategicImplication": "why this matters for the entity"
+      "capability": "≤15 words",
+      "strategicImplication": "≤15 words"
     }
   ],
   "adjacencyOpportunities": [
     {
       "area": "capability or workflow area",
-      "partnershipLogic": "why partnership makes sense",
-      "acquisitionLogic": "why acquisition might make sense, or null if not applicable",
-      "buildVsBuy": "build vs buy vs partner analysis",
-      "connectedNodeIds": ["<Stage 1 node ids this relates to>"],
-      "risks": "key risks or constraints"
+      "partnershipLogic": "≤15 words",
+      "acquisitionLogic": "≤15 words or null",
+      "buildVsBuy": "≤15 words",
+      "connectedNodeIds": ["<Stage 1 node ids>"],
+      "risks": "≤15 words"
     }
   ],
   "refinedAssertions": [
@@ -699,33 +707,33 @@ Return ONLY valid JSON, no markdown, no backticks:
       "nodeId": "<Stage 1 node id>",
       "refinementType": "strengthened|narrowed|qualified|weakened|contradicted|unresolved",
       "originalStatement": "<exact original assertion text>",
-      "revisedStatement": "more precise or better-grounded version",
-      "reason": "what evidence drove this refinement",
+      "revisedStatement": "≤30 words — more precise or better-grounded version",
+      "reason": "≤15 words: what evidence drove this",
       "confidenceChange": "increased|decreased|unchanged"
     }
   ],
   "contradictionMap": [
     {
-      "description": "what the tension is",
+      "description": "≤20 words: what the tension is",
       "tensionType": "evidence_conflict|strategic_inconsistency|business_model_tension|pricing_conflict|capability_constraint|compliance_constraint",
       "nodeIds": ["<involved Stage 1 node ids>"],
       "resolution": "unresolved|partial|resolved",
-      "resolutionNote": "why it is or is not resolved — preserve genuine uncertainty"
+      "resolutionNote": "≤15 words"
     }
   ],
   "unresolvedQuestions": [
-    "specific strategically important question that remains unanswered after Stage 2"
+    "≤20 words: specific strategically important question"
   ],
   "stage3ReadinessSummary": {
-    "strongestThemes": ["theme 1", "theme 2"],
-    "unresolvedBlockers": ["what prevents clean Stage 3 synthesis"],
-    "refinedTensions": ["key tensions to carry into Stage 3"],
-    "highConfidenceFindings": ["findings with strong evidence grounding"],
-    "capabilityGaps": ["gaps that affect strategic direction"],
-    "strategicImplications": ["implications worth synthesizing in Stage 3"]
+    "strongestThemes": ["≤10 words each — max 2"],
+    "unresolvedBlockers": ["≤10 words each — max 2"],
+    "refinedTensions": ["≤10 words each — max 2"],
+    "highConfidenceFindings": ["≤10 words each — max 2"],
+    "capabilityGaps": ["≤10 words each — max 2"],
+    "strategicImplications": ["≤10 words each — max 2"]
   },
   "recommendedNextActions": [
-    "specific research action, assertion to revisit, or area to expand"
+    "≤20 words: specific action — max 3"
   ]
 }`
 }

@@ -19,6 +19,8 @@ import {
   buildStage2ContextPacket,
   computeDiff,
   applyDiff,
+  computePivotRecommendations,
+  recommendTargetNodes,
 } from '../v4utils'
 import { callClaude, callClaudeWithSearch } from '../api'
 
@@ -37,6 +39,13 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   useEffect(() => {
     if (session) onSave(sessionId, session)
   }, [session]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Guard: if step resolved to 'stage2' on load but stage2 data is absent, fall back to inspect
+  useEffect(() => {
+    if (step === 'stage2' && !session.stage2 && session.stage1) {
+      setStep('inspect')
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Intent submitted → run Stage 1 ──────────────────────────
   async function handleIntentSubmit(entity, intent) {
@@ -268,6 +277,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         stageNumber: 2,
         generatedAt: Date.now(),
         ...stage2Data,
+        pivots:      [],   // pivot accumulation layer — not part of orientation pass schema
       }
 
       setSession(prev => ({ ...prev, stage2 }))
@@ -301,6 +311,16 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         ),
       },
     }))
+  }
+
+  // ── Run pivot (Milestone 2 stub — wiring in place, execution in Milestone 3) ─
+  // eslint-disable-next-line no-unused-vars
+  function handleRunPivot(pivotType, targetNodeIds) {
+    // Milestone 3: will call callClaudeWithSearch with a typed pivot prompt,
+    // parse the result, and append to session.stage2.pivots[].
+    // No-op in Milestone 2 — scaffold only.
+    void pivotType
+    void targetNodeIds
   }
 
   // ── Render ───────────────────────────────────────────────────
@@ -411,6 +431,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             onAcceptRefinement={handleAcceptRefinement}
             onRejectRefinement={handleRejectRefinement}
             onBackToStage1={() => setStep('inspect')}
+            onRunPivot={handleRunPivot}
+            onRerunStage2={handleRunStage2}
           />
         )}
       </div>
