@@ -220,6 +220,19 @@ function Stage2Trigger({ hasStage2, reviewedCount, nodeCount, onRun, onView }) {
           </div>
         </div>
         <button
+          onClick={onRun}
+          style={{
+            fontSize: 10, fontFamily: 'var(--fm)',
+            padding: '5px 12px', borderRadius: 5, cursor: 'pointer',
+            background: 'none', color: 'var(--muted)',
+            border: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}
+        >
+          <i className="ti ti-refresh" style={{ fontSize: 10 }} />
+          Re-run
+        </button>
+        <button
           onClick={onView}
           style={{
             fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,

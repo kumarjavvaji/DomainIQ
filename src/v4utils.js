@@ -160,12 +160,37 @@ export function applyDiff(originalNodes, ptResult) {
 }
 
 // Builds the compact context packet injected into Stage 2 prompt.
-// Pulls only persisted, inspectable fields — never raw API response blobs.
+// Prioritizes by analytical signal: high-confidence nodes first, metadata stripped,
+// counts capped so low-value context does not crowd out output token headroom.
 export function buildStage2ContextPacket(session) {
   const nodes = session.stage1?.nodes || []
-  const accepted   = nodes.filter(n => n.userStatus === 'accepted')
-  const refined    = nodes.filter(n => n.previousStatement)
-  const unresolved = nodes.filter(n => n.userStatus === 'needs_review')
+  const confidenceRank = { high: 0, medium: 1, low: 2 }
+  const byConfidence = (a, b) => (confidenceRank[a.confidence] ?? 3) - (confidenceRank[b.confidence] ?? 3)
+
+  // Strip to analytical-signal fields only — Stage 2 does not need status metadata
+  const slim = n => ({ id: n.id, type: n.type, statement: n.statement, confidence: n.confidence })
+
+  const accepted = nodes
+    .filter(n => n.userStatus === 'accepted')
+    .sort(byConfidence)
+    .slice(0, 6)
+    .map(slim)
+
+  const refined = nodes
+    .filter(n => n.previousStatement)
+    .sort(byConfidence)
+    .slice(0, 4)
+    .map(n => ({ ...slim(n), previousStatement: n.previousStatement }))
+
+  const unresolved = nodes
+    .filter(n => n.userStatus === 'needs_review')
+    .slice(0, 3)
+    .map(n => ({ ...slim(n), userNote: n.userNote }))
+
+  const patterns = [...(session.stage1?.inferredPatterns || [])]
+    .sort(byConfidence)
+    .slice(0, 2)
+
   return {
     entity:           session.entity,
     intent:           session.intent,
@@ -173,12 +198,149 @@ export function buildStage2ContextPacket(session) {
     acceptedNodes:    accepted,
     refinedNodes:     refined,
     unresolvedNodes:  unresolved,
-    openQuestions:    session.stage1?.openQuestions  || [],
-    inferredPatterns: session.stage1?.inferredPatterns || [],
+    openQuestions:    (session.stage1?.openQuestions || []).slice(0, 3),
+    inferredPatterns: patterns,
   }
 }
 
 // Returns a compact policy description string for display in UI badges.
 export function policyLabel(policy) {
   return `${policy.tokenBudget} token · ${policy.skepticismLevel} skepticism · ${policy.maxOutputWords}w`
+}
+
+// Deterministic hash of Stage 1 basis — used to detect when Stage 2 has gone stale.
+// Covers the fields that materially affect Stage 2 output: id, statement, userStatus, confidence.
+// Output is an unsigned 32-bit decimal string; collision risk negligible at realistic node counts.
+export function computeStage1BasisHash(stage1) {
+  const nodes = (stage1?.nodes || [])
+    .map(n => `${n.id}:${n.statement}:${n.userStatus}:${n.confidence}`)
+    .sort()
+    .join('|')
+  let h = 0
+  for (let i = 0; i < nodes.length; i++) {
+    h = Math.imul(31, h) + nodes.charCodeAt(i) | 0
+  }
+  return String(h >>> 0)
+}
+
+// ── Stage 2 pivot system ──────────────────────────────────────────────────────
+//
+// computePivotRecommendations — deterministic scoring from orientation pass data.
+// No AI call. Runs client-side from existing stage2 + stage1 node composition.
+//
+// Returns up to 3 recommended pivot types, sorted by score descending.
+// priority labels: score ≥ 3 → 'high' | ≥ 2 → 'medium' | ≥ 1 → 'low'
+
+export function computePivotRecommendations(session) {
+  const nodes  = session.stage1?.nodes || []
+  const stage2 = session.stage2 || {}
+  const cm     = stage2.contradictionMap       || []
+  const eq     = stage2.emergingEntrants        || []
+  const uq     = stage2.unresolvedQuestions     || []
+  const comp   = stage2.competitorMap           || []
+  const adj    = stage2.adjacencyOpportunities  || []
+
+  const scores = {
+    contextual_competition: (
+      (comp.length > 0                                                          ? 2 : 0) +
+      (cm.some(c => c.tensionType === 'strategic_inconsistency')                ? 1 : 0) +
+      (nodes.filter(n => n.type === 'opportunity').length >= 2                  ? 1 : 0)
+    ),
+    operational_constraints: (
+      (nodes.some(n => n.type === 'constraint' || n.type === 'risk')            ? 2 : 0) +
+      (cm.some(c => ['capability_constraint', 'compliance_constraint']
+                     .includes(c.tensionType))                                  ? 2 : 0) +
+      (adj.some(a => a.risks)                                                   ? 1 : 0)
+    ),
+    adoption_dynamics: (
+      (nodes.filter(n => n.type === 'assumption').length >= 2                   ? 1 : 0) +
+      (cm.some(c => c.tensionType === 'business_model_tension')                 ? 2 : 0) +
+      (eq.length > 0                                                            ? 1 : 0)
+    ),
+    business_model_pressures: (
+      (cm.some(c => ['pricing_conflict', 'business_model_tension']
+                     .includes(c.tensionType))                                  ? 2 : 0) +
+      (nodes.some(n => /revenue|pric|subscri|fee|model/i.test(n.statement))    ? 1 : 0)
+    ),
+    emerging_disruption: (
+      (eq.length > 0                                                            ? 2 : 0) +
+      (uq.length >= 3                                                           ? 1 : 0)
+    ),
+    adjacent_capabilities: (
+      (adj.length > 0                                                           ? 2 : 0)
+    ),
+  }
+
+  const priorityLabel = s => s >= 3 ? 'high' : s >= 2 ? 'medium' : 'low'
+
+  return Object.entries(scores)
+    .filter(([, s]) => s > 0)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([type, score]) => ({ type, score, priority: priorityLabel(score) }))
+}
+
+// recommendTargetNodes — infers which Stage 1 node IDs are most contextually
+// relevant for the given pivot type.  Returns node IDs (max 3, deduplicated).
+// Pre-populates the TargetNodeSelector; user can edit before executing.
+
+export function recommendTargetNodes(pivotType, stage1Nodes, stage2) {
+  const MAX    = 3
+  const dedupe = arr => [...new Map(arr.map(n => [n.id, n])).values()]
+
+  switch (pivotType) {
+    case 'contextual_competition':
+      // Opportunities, hypotheses, assumptions — assertions most reshaped by competitor context
+      return dedupe(
+        stage1Nodes.filter(n => ['opportunity', 'hypothesis', 'assumption'].includes(n.type))
+      ).slice(0, MAX).map(n => n.id)
+
+    case 'operational_constraints':
+      // Constraint and risk nodes first; then low-confidence hypotheses
+      return dedupe([
+        ...stage1Nodes.filter(n => ['constraint', 'risk'].includes(n.type)),
+        ...stage1Nodes.filter(n => n.type === 'hypothesis' && n.confidence === 'low'),
+      ]).slice(0, MAX).map(n => n.id)
+
+    case 'adoption_dynamics':
+      // Assumptions and hypotheses — behavioral and demand claims
+      return dedupe(
+        stage1Nodes.filter(n => ['assumption', 'hypothesis'].includes(n.type))
+      ).slice(0, MAX).map(n => n.id)
+
+    case 'business_model_pressures': {
+      // Pull from contradiction map nodes first (already flagged as business model tensions)
+      const fromContradictions = new Set(
+        (stage2?.contradictionMap || [])
+          .filter(c => ['business_model_tension', 'pricing_conflict'].includes(c.tensionType))
+          .flatMap(c => c.nodeIds || [])
+      )
+      return dedupe([
+        ...stage1Nodes.filter(n => fromContradictions.has(n.id)),
+        ...stage1Nodes.filter(n => n.type === 'assumption'),
+      ]).slice(0, MAX).map(n => n.id)
+    }
+
+    case 'emerging_disruption':
+      // Hypothesis and opportunity nodes — forward-looking claims most exposed to disruption
+      return dedupe(
+        stage1Nodes.filter(n => ['hypothesis', 'opportunity'].includes(n.type))
+      ).slice(0, MAX).map(n => n.id)
+
+    case 'adjacent_capabilities':
+      // Use connectedNodeIds from adjacency opportunities first
+      return (stage2?.adjacencyOpportunities || [])
+        .flatMap(a => a.connectedNodeIds || [])
+        .filter((id, i, arr) => arr.indexOf(id) === i)
+        .slice(0, MAX)
+
+    default:
+      // Fallback: lowest confidence nodes
+      return dedupe(
+        [...stage1Nodes].sort((a, b) =>
+          ['low', 'medium', 'high'].indexOf(a.confidence) -
+          ['low', 'medium', 'high'].indexOf(b.confidence)
+        )
+      ).slice(0, MAX).map(n => n.id)
+  }
 }
