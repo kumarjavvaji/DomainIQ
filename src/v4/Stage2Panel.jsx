@@ -100,6 +100,11 @@ export default function Stage2Panel({
   onRunPivot,
   onAcceptPivotUpdate, onRefinePivotUpdate, onRejectPivotUpdate,
   onRerunStage2,
+  hasStage3, onRunStage3, onViewStage3,
+  // Severity-aware stale banner props — present only when stage1Snapshot exists
+  stage1ChangeSeverity,  // 'cosmetic'|'minor_clarification'|'substantive_refinement'|'material_reframing'|'major_basis_change'|null
+  onReconcileStage2,     // () => void — triggers targeted reconcile generation
+  onUpdateBasisOnly,     // () => void — marks Stage 2 current with no LLM call (cosmetic only)
 }) {
   const stage1Nodes = session.stage1?.nodes || []
 
@@ -127,9 +132,15 @@ export default function Stage2Panel({
         </button>
       </div>
 
-      {/* Stale banner — shown when Stage 1 has changed since Stage 2 was generated */}
+      {/* Stale banner — shown when Stage 1 has changed since Stage 2 was generated.
+          Severity controls which action buttons are shown — see StaleBanner for details. */}
       {isStale && (
-        <StaleBanner onRerun={onRerunStage2} />
+        <StaleBanner
+          severity={stage1ChangeSeverity}
+          onRerun={onRerunStage2}
+          onReconcile={onReconcileStage2}
+          onUpdateBasisOnly={onUpdateBasisOnly}
+        />
       )}
 
       {/* Invalid-state banner — shown when summary is absent (truncation / wrapper drift / retrieval_failed fallback) */}
@@ -260,7 +271,15 @@ export default function Stage2Panel({
         </Section>
       )}
 
-      {/* Pivot launcher — always rendered after orientation sections */}
+      {/* Pivot context — surfaces completed pivots before the launcher */}
+      <PivotContextSection
+        stage2={stage2}
+        onAcceptPivotUpdate={onAcceptPivotUpdate}
+        onRefinePivotUpdate={onRefinePivotUpdate}
+        onRejectPivotUpdate={onRejectPivotUpdate}
+      />
+
+      {/* Pivot launcher — for generating new pivots and reconfiguring existing ones */}
       <PivotLauncher
         session={session}
         stage2={stage2}
@@ -268,6 +287,13 @@ export default function Stage2Panel({
         onAcceptPivotUpdate={onAcceptPivotUpdate}
         onRefinePivotUpdate={onRefinePivotUpdate}
         onRejectPivotUpdate={onRejectPivotUpdate}
+      />
+
+      {/* Stage 3 trigger — rendered below pivot launcher */}
+      <Stage3Trigger
+        hasStage3={hasStage3}
+        onRun={onRunStage3}
+        onView={onViewStage3}
       />
 
     </div>
@@ -456,7 +482,7 @@ function RefinedAssertionsSection({ items, stage1Nodes, onAccept, onReject }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted)', marginBottom: 2 }}>
-        <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> Proposals only — Stage 1 is not mutated until you accept.
+        <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> Accepted refinements are approved for downstream synthesis. Stage 1 remains preserved as the original research basis.
       </div>
       {items.map((r, i) => {
         const status = r.userStatus || 'pending'
@@ -654,34 +680,132 @@ function NextActionsSection({ items }) {
 }
 
 // ── Stale Stage 2 banner ───────────────────────────────────────────────────────
-// Shown when session.stage1BasisHash !== session.stage2.generatedFromStage1BasisHash.
-// Stage 2 may still be valid and renders normally below this banner.
+//
+// Severity-aware: button set changes based on the type of Stage 1 change detected.
+//
+//   severity === null          → no stage1Snapshot (pre-feature session)
+//                                Shows single "Regenerate" button (original behavior).
+//
+//   'cosmetic'                 → only status/accept-reject changed, no text edits.
+//                                Primary: "Update basis only" (no LLM call).
+//                                Secondary: "Reconcile" + "Full rerun".
+//
+//   'minor_clarification'
+//   'substantive_refinement'   → statement or confidence changes on 1-3 nodes.
+//                                Primary: "Reconcile impacted sections" (targeted LLM).
+//                                Secondary: "Full rerun".
+//
+//   'material_reframing'
+//   'major_basis_change'       → 4+ statement changes or structural add/remove.
+//                                Primary: "Full Stage 2 rerun — recommended" (prominent).
+//                                Secondary: "Reconcile instead" (escape hatch).
 
-function StaleBanner({ onRerun }) {
+function StaleBanner({ severity, onRerun, onReconcile, onUpdateBasisOnly }) {
+  const SEVERITY_COPY = {
+    null:                    { msg: 'Stage 2 was generated from an older Stage 1 basis.',                                           color: '#fb923c' },
+    cosmetic:                { msg: 'Stage 1 has minor status-only changes. Stage 2 content is likely still valid.',                color: 'var(--a4)'  },
+    minor_clarification:     { msg: 'Stage 1 has confidence or status changes that may affect a few Stage 2 sections.',            color: '#fb923c' },
+    substantive_refinement:  { msg: 'Stage 1 has statement changes on 1–3 nodes. Some Stage 2 sections may need updating.',        color: '#fb923c' },
+    material_reframing:      { msg: 'Stage 1 has broad statement changes across multiple nodes. A full rerun is recommended.',      color: '#f87171' },
+    major_basis_change:      { msg: 'Stage 1 has structural changes (nodes added or removed). A full Stage 2 rerun is recommended.', color: '#f87171' },
+  }
+
+  const cfg   = SEVERITY_COPY[severity ?? null] || SEVERITY_COPY[null]
+  const color = cfg.color
+
+  const btnBase = {
+    fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+    padding: '4px 12px', borderRadius: 5, cursor: 'pointer',
+    display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+  }
+
+  let buttons
+  if (!severity) {
+    // No snapshot — legacy session; single rerun button (original behavior)
+    buttons = (
+      <button onClick={onRerun} style={{ ...btnBase, background: '#fb923c', color: '#fff', border: 'none' }}>
+        <i className="ti ti-refresh" style={{ fontSize: 11 }} /> Regenerate Stage 2 from updated basis
+      </button>
+    )
+  } else if (severity === 'cosmetic') {
+    buttons = (
+      <>
+        <button
+          onClick={onUpdateBasisOnly}
+          style={{ ...btnBase, background: 'var(--a4)', color: '#fff', border: 'none' }}
+          title="Marks Stage 2 as current with this basis — no LLM call"
+        >
+          <i className="ti ti-database-check" style={{ fontSize: 11 }} /> Update basis only
+        </button>
+        {onReconcile && (
+          <button
+            onClick={onReconcile}
+            style={{ ...btnBase, background: 'none', border: '1px solid rgba(90,80,220,.35)', color: 'var(--a4)' }}
+          >
+            <i className="ti ti-git-merge" style={{ fontSize: 11 }} /> Reconcile
+          </button>
+        )}
+        <button
+          onClick={onRerun}
+          style={{ ...btnBase, background: 'none', border: '1px solid var(--border)', color: 'var(--muted)' }}
+        >
+          <i className="ti ti-refresh" style={{ fontSize: 11 }} /> Full rerun
+        </button>
+      </>
+    )
+  } else if (severity === 'minor_clarification' || severity === 'substantive_refinement') {
+    buttons = (
+      <>
+        <button
+          onClick={onReconcile}
+          style={{ ...btnBase, background: '#fb923c', color: '#fff', border: 'none' }}
+        >
+          <i className="ti ti-git-merge" style={{ fontSize: 11 }} /> Reconcile impacted sections
+        </button>
+        <button
+          onClick={onRerun}
+          style={{ ...btnBase, background: 'none', border: '1px solid var(--border)', color: 'var(--muted)' }}
+        >
+          <i className="ti ti-refresh" style={{ fontSize: 11 }} /> Full rerun
+        </button>
+      </>
+    )
+  } else {
+    // material_reframing | major_basis_change
+    buttons = (
+      <>
+        <button
+          onClick={onRerun}
+          style={{ ...btnBase, background: '#f87171', color: '#fff', border: 'none' }}
+        >
+          <i className="ti ti-refresh" style={{ fontSize: 11 }} /> Full Stage 2 rerun — recommended
+        </button>
+        {onReconcile && (
+          <button
+            onClick={onReconcile}
+            style={{ ...btnBase, background: 'none', border: '1px solid rgba(248,113,113,.3)', color: '#f87171' }}
+          >
+            <i className="ti ti-git-merge" style={{ fontSize: 11 }} /> Reconcile instead
+          </button>
+        )}
+      </>
+    )
+  }
+
   return (
     <div style={{
       padding: '10px 14px',
-      background: 'rgba(251,146,60,.05)',
-      border: '1px solid rgba(251,146,60,.3)',
+      background: `${color}08`,
+      border: `1px solid ${color}40`,
       borderRadius: 'var(--r)',
       marginBottom: 14,
       display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
     }}>
-      <i className="ti ti-alert-circle" style={{ fontSize: 13, color: '#fb923c', flexShrink: 0 }} />
-      <span style={{ fontSize: 10, color: '#fb923c', fontFamily: 'var(--fm)', flex: 1 }}>
-        Stage 2 was generated from an older Stage 1 basis.
+      <i className="ti ti-alert-circle" style={{ fontSize: 13, color, flexShrink: 0 }} />
+      <span style={{ fontSize: 10, color, fontFamily: 'var(--fm)', flex: 1 }}>
+        {cfg.msg}
       </span>
-      <button
-        onClick={onRerun}
-        style={{
-          fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
-          padding: '4px 12px', borderRadius: 5, cursor: 'pointer',
-          background: '#fb923c', color: '#fff', border: 'none',
-          display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
-        }}
-      >
-        <i className="ti ti-refresh" style={{ fontSize: 11 }} /> Regenerate Stage 2 from updated basis
-      </button>
+      {buttons}
     </div>
   )
 }
@@ -819,6 +943,98 @@ function CountBadge({ count, color }) {
     }}>
       {count}
     </span>
+  )
+}
+
+// ── PivotContextSection — surfaces completed pivot work in the main Stage 2 flow ──
+//
+// Rendered above PivotLauncher so approved/pending pivot work is visible without
+// opening the "Add pivot" launcher. Only shows pivots with status === 'complete'.
+// Reuses ProposedUpdateCard for the per-update approve/refine/reject controls.
+
+function PivotContextCard({ pivot, onAcceptUpdate, onRefineUpdate, onRejectUpdate }) {
+  const meta     = PIVOT_TYPE_META[pivot.type] || { label: pivot.type, icon: 'ti-bolt' }
+  const pending  = (pivot.proposedUpdates || []).filter(u => u.status === 'proposed').length
+  const accepted = (pivot.proposedUpdates || []).filter(u => ['accepted', 'refined'].includes(u.status)).length
+  const rejected = (pivot.proposedUpdates || []).filter(u => u.status === 'rejected').length
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      {/* Pivot header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8, flexWrap: 'wrap' }}>
+        <i className={`ti ${meta.icon}`} style={{ fontSize: 12, color: 'var(--a2)', flexShrink: 0 }} />
+        <span style={{ fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
+        {pending  > 0 && <CountBadge count={`${pending} pending`}  color="#fb923c"       />}
+        {accepted > 0 && <CountBadge count={`${accepted} accepted`} color="var(--accent)"/>}
+        {rejected > 0 && <CountBadge count={`${rejected} rejected`} color="#f87171"       />}
+      </div>
+
+      {/* Finding summary */}
+      {pivot.displaySummary && (
+        <div style={{
+          padding: '8px 10px', borderRadius: 5, marginBottom: 10,
+          background: 'rgba(124,108,250,.05)', border: '1px solid rgba(124,108,250,.15)',
+          fontSize: 11, color: 'var(--text)', lineHeight: 1.65,
+        }}>
+          {pivot.displaySummary}
+        </div>
+      )}
+
+      {/* Proposed updates */}
+      {(pivot.proposedUpdates || []).length > 0 && (
+        <>
+          <div style={{
+            fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginBottom: 6,
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            Proposed updates
+            {accepted > 0 && <CountBadge count={`${accepted} accepted`} color="var(--accent)" />}
+            {rejected > 0 && <CountBadge count={`${rejected} rejected`} color="#f87171"       />}
+            {pending  > 0 && <CountBadge count={`${pending} pending`}   color="var(--muted)"  />}
+          </div>
+          {pivot.proposedUpdates.map(u => (
+            <ProposedUpdateCard
+              key={u.id}
+              update={u}
+              onAccept={() => onAcceptUpdate(u.id)}
+              onRefine={text => onRefineUpdate(u.id, text)}
+              onReject={() => onRejectUpdate(u.id)}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+
+function PivotContextSection({ stage2, onAcceptPivotUpdate, onRefinePivotUpdate, onRejectPivotUpdate }) {
+  const completedPivots = (stage2.pivots || []).filter(p => p.status === 'complete')
+  if (completedPivots.length === 0) return null
+
+  const totalPending = completedPivots.reduce(
+    (n, p) => n + (p.proposedUpdates || []).filter(u => u.status === 'proposed').length,
+    0
+  )
+  const sectionCount = totalPending > 0 ? `${totalPending} pending` : completedPivots.length
+
+  return (
+    <Section
+      title="Pivot context"
+      icon="ti-bolt"
+      accentColor="var(--a2)"
+      count={sectionCount}
+      defaultOpen={true}
+    >
+      {completedPivots.map(pivot => (
+        <PivotContextCard
+          key={pivot.id || pivot.type}
+          pivot={pivot}
+          onAcceptUpdate={updateId => onAcceptPivotUpdate(pivot.type, updateId)}
+          onRefineUpdate={(updateId, text) => onRefinePivotUpdate(pivot.type, updateId, text)}
+          onRejectUpdate={updateId => onRejectPivotUpdate(pivot.type, updateId)}
+        />
+      ))}
+    </Section>
   )
 }
 
@@ -1514,6 +1730,84 @@ function TargetNodeSelector({ stage1Nodes, selectedIds, onConfirm }) {
         }}
       >
         Confirm
+      </button>
+    </div>
+  )
+}
+
+// ── Stage 3 trigger — rendered below PivotLauncher ───────────────────────────
+function Stage3Trigger({ hasStage3, onRun, onView }) {
+  if (hasStage3) {
+    return (
+      <div style={{
+        marginTop: 10, padding: '10px 14px', background: 'var(--s2)',
+        border: '1px solid var(--accent)', borderRadius: 'var(--r)',
+        display: 'flex', alignItems: 'center', gap: 10,
+      }}>
+        <i className="ti ti-layers-intersect" style={{ fontSize: 13, color: 'var(--accent)' }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600, color: 'var(--accent)' }}>
+            Stage 3 — Strategic Synthesis
+          </div>
+          <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginTop: 1 }}>
+            Thesis, insight clusters, and readiness assessment generated
+          </div>
+        </div>
+        <button
+          onClick={onRun}
+          style={{
+            fontSize: 10, fontFamily: 'var(--fm)',
+            padding: '5px 12px', borderRadius: 5, cursor: 'pointer',
+            background: 'none', color: 'var(--muted)',
+            border: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}
+        >
+          <i className="ti ti-refresh" style={{ fontSize: 10 }} />
+          Re-run
+        </button>
+        <button
+          onClick={onView}
+          style={{
+            fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+            padding: '5px 12px', borderRadius: 5, cursor: 'pointer',
+            background: 'var(--accent)', color: '#fff', border: 'none',
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}
+        >
+          View Stage 3
+          <i className="ti ti-arrow-right" style={{ fontSize: 10 }} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{
+      marginTop: 10, padding: '10px 14px', background: 'var(--s2)',
+      border: '1px solid var(--border)', borderRadius: 'var(--r)',
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <i className="ti ti-layers-intersect" style={{ fontSize: 13, color: 'var(--muted2)' }} />
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600, color: 'var(--muted2)' }}>
+          Stage 3 — Strategic Synthesis
+        </div>
+        <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginTop: 1 }}>
+          Synthesize evidence into thesis, insight clusters, strategic options, and readiness assessment
+        </div>
+      </div>
+      <button
+        onClick={onRun}
+        style={{
+          fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+          padding: '5px 12px', borderRadius: 5, cursor: 'pointer',
+          background: 'var(--a2)', color: '#fff', border: 'none',
+          display: 'flex', alignItems: 'center', gap: 5,
+        }}
+      >
+        <i className="ti ti-player-play" style={{ fontSize: 10 }} />
+        Run Stage 3
       </button>
     </div>
   )
