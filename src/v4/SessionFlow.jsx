@@ -545,7 +545,9 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       } else {
         const ctx = buildStage3ContextPacket(session)
         const prompt = buildStage3Prompt({ ...ctx })
-        const raw = await callClaude(prompt, 6000)
+        // Stage 3 has 9 output sections; rich sessions regularly reach 7–8k tokens.
+        // 10 000 gives headroom without approaching model limits.
+        const raw = await callClaude(prompt, 10000)
         stage3Data = JSON.parse(raw)
       }
 
