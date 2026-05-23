@@ -1092,3 +1092,745 @@ export const MOCK_V4_STAGE2 = {
     'Investigate compliance reporting automation as a Stage 3 strategic focus area',
   ],
 }
+
+// ─── Stage 2 Reconcile ───────────────────────────────────────────────────────
+//
+// Targeted update pass for Stage 2 when Stage 1 changes are narrow in scope.
+// Unlike a full rerun, the reconcile prompt receives only the impacted sections
+// and asks the LLM to update just those — returning a partial JSON object.
+// The caller overlays the result onto the existing stage2 before running
+// buildStage2Comparison so that untouched sections produce no diff artifacts.
+
+// Demo mock — used when no API key is set. Provides enough difference vs the
+// original MOCK_V4_STAGE2 to demonstrate the reconcile review UI.
+export const MOCK_V4_STAGE2_RECONCILE = {
+  summary: {
+    whatChanged:       'Reconcile pass sharpened the commercial model assertion and pricing-signal grounding',
+    strongestEvidence: 'Revised pricing-model assertion is better supported by contract structure patterns',
+    weakestAreas:      'Community bank self-service analytics adoption threshold remains empirically thin',
+    dominantTensions:  'Subscription pivot signal vs. existing transaction revenue base creates execution uncertainty',
+    likelyDirection:   'Deliberate shift toward recurring revenue is now consistent with the updated assertion basis',
+  },
+  evidenceConsolidation: [
+    {
+      nodeId:          'n3',
+      relationship:    'supports',
+      evidenceSummary: 'Contract renewal terms indicate movement toward subscription-style engagement for mid-market',
+      sourceLabel:     'Contract structure patterns (reconcile pass)',
+      sourceUrl:       null,
+    },
+    {
+      nodeId:          'n5',
+      relationship:    'qualifies',
+      evidenceSummary: 'Compliance-driven upsell is recurring-revenue compatible but timing depends on regulatory cycle',
+      sourceLabel:     'Compliance adjacency signals',
+      sourceUrl:       null,
+    },
+  ],
+  refinedAssertions: [
+    {
+      nodeId:            'n3',
+      originalStatement: 'Finlytica uses a transaction-based fee model',
+      revisedStatement:  'Finlytica is transitioning from transaction-based to subscription-style pricing, with hybrid arrangements mid-cycle',
+      refinementType:    'strengthened',
+      confidenceChange:  'increased',
+      reason:            'Updated assertion basis incorporated in reconcile pass',
+    },
+  ],
+  stage3ReadinessSummary: {
+    strongestThemes: [
+      'Subscription pricing pivot is now analytically grounded with the updated assertion basis',
+      'Compliance adjacency remains a coherent strategic thread independent of pricing model',
+    ],
+    unresolvedBlockers: [
+      'Community banking self-service analytics tipping point remains empirically thin after reconcile',
+    ],
+    refinedTensions: [
+      'Transaction revenue base vs. subscription margin profile: transition timeline is the key uncertainty',
+    ],
+    highConfidenceFindings: [
+      'Mid-market community bank compliance-analytics demand is well-grounded post-reconcile pass',
+    ],
+    capabilityGaps: [],
+    strategicImplications: [
+      'Stage 3 should treat subscription pricing migration as a first-order strategic hypothesis',
+    ],
+  },
+}
+
+// Section-level JSON schema fragments used to build the dynamic reconcile output schema.
+const RECONCILE_SECTION_SCHEMAS = {
+  summary:
+`  "summary": {
+    "whatChanged": "≤20 words: what the reconcile pass materially changed",
+    "strongestEvidence": "≤20 words: strongest evidence for the updated assertions",
+    "weakestAreas": "≤20 words: still-thin areas after reconcile",
+    "dominantTensions": "≤20 words: key tensions in the updated picture",
+    "likelyDirection": "≤20 words: updated strategic direction signal"
+  }`,
+  evidenceConsolidation:
+`  "evidenceConsolidation": [
+    {
+      "nodeId": "stage1 node id the evidence relates to",
+      "relationship": "supports|contradicts|qualifies|unresolved",
+      "evidenceSummary": "≤20 words: what the evidence says",
+      "sourceLabel": "≤10 words: source name or descriptor",
+      "sourceUrl": null
+    }
+  ]`,
+  competitorMap:
+`  "competitorMap": [
+    {
+      "name": "competitor name", "type": "direct|indirect|adjacent",
+      "segmentFit": "≤20 words", "strategicDivergence": "≤20 words",
+      "capabilityGaps": "≤60 words", "acquisitionLogic": "≤60 words"
+    }
+  ]`,
+  emergingEntrants:
+`  "emergingEntrants": [
+    {
+      "name": "entrant name", "threatLevel": "low|medium|high",
+      "strategicImplication": "≤60 words"
+    }
+  ]`,
+  contradictionMap:
+`  "contradictionMap": [
+    {
+      "tensionType": "≤5 words label", "description": "≤20 words",
+      "resolution": "≤10 words", "nodeIds": [],
+      "resolutionNote": "≤20 words"
+    }
+  ]`,
+  adjacencyOpportunities:
+`  "adjacencyOpportunities": [
+    {
+      "area": "≤5 words", "capability": "≤60 words",
+      "partnershipLogic": "≤60 words", "buildVsBuy": "≤60 words", "risks": "≤60 words"
+    }
+  ]`,
+  refinedAssertions:
+`  "refinedAssertions": [
+    {
+      "nodeId": "stage1 node id",
+      "originalStatement": "≤60 words: original text",
+      "revisedStatement": "≤60 words: updated text reflecting new evidence",
+      "refinementType": "strengthened|narrowed|qualified|weakened|contradicted|unresolved",
+      "confidenceChange": "increased|decreased|unchanged",
+      "reason": "≤30 words: why this revision is warranted"
+    }
+  ]`,
+  unresolvedQuestions:
+`  "unresolvedQuestions": [
+    "≤60 words: specific open question — 3 to 5 items"
+  ]`,
+  recommendedNextActions:
+`  "recommendedNextActions": [
+    "≤60 words: specific action with rationale — 3 to 5 items"
+  ]`,
+  stage3ReadinessSummary:
+`  "stage3ReadinessSummary": {
+    "strongestThemes":        ["≤25 words — max 3: explain the signal"],
+    "unresolvedBlockers":     ["≤25 words — max 3: explain why it blocks"],
+    "refinedTensions":        ["≤25 words — max 3: name both forces and consequence"],
+    "highConfidenceFindings": ["≤25 words — max 3: state what is now well-grounded"],
+    "capabilityGaps":         ["≤25 words — max 3: name gap and why it matters"],
+    "strategicImplications":  ["≤25 words — max 3: one implication for Stage 3 framing"]
+  }`,
+}
+
+export function buildStage2ReconcilePrompt({
+  entity, intent, policy,
+  stage1Summary, acceptedNodes,
+  changedNodes,
+  currentStage2Sections,
+  sectionsToUpdate,
+}) {
+  const policyBlock = renderPolicy(policy)
+
+  // ── Changed nodes block ───────────────────────────────────────────────────
+  const changesBlock = (changedNodes || []).map((c, i) => {
+    const lines = [`  ${i + 1}. [${c.nodeId}] (${c.nodeType || 'node'})`]
+    if (c.statementChanged) {
+      lines.push(`       WAS:  "${c.previousStatement}"`)
+      lines.push(`       NOW:  "${c.currentStatement}"`)
+      if (c.changeReason) lines.push(`       WHY:  ${c.changeReason}`)
+    }
+    if (c.confidenceChanged) lines.push(`       CONFIDENCE: ${c.previousConfidence} → ${c.currentConfidence}`)
+    if (c.statusChanged)     lines.push(`       STATUS: ${c.previousStatus} → ${c.currentStatus}`)
+    return lines.join('\n')
+  }).join('\n') || '  None recorded.'
+
+  // ── Current impacted-section context ─────────────────────────────────────
+  const currentCtxBlock = (sectionsToUpdate || []).map(key => {
+    const val = currentStage2Sections?.[key]
+    if (val == null) return `${key}: (empty)`
+    const json = JSON.stringify(val, null, 2)
+    // Truncate very long sections to keep prompt size bounded
+    return `${key}:\n${json.length > 600 ? json.slice(0, 600) + '\n  … (truncated)' : json}`
+  }).join('\n\n') || '  (none)'
+
+  // ── Accepted nodes block ──────────────────────────────────────────────────
+  const acceptedBlock = (acceptedNodes || []).length > 0
+    ? acceptedNodes.map(n => `  [${n.id}] (${n.type}, ${n.confidence}) "${n.statement}"`).join('\n')
+    : '  None accepted yet.'
+
+  // ── Output schema (only the requested sections) ───────────────────────────
+  const schemaLines = (sectionsToUpdate || [])
+    .map(k => RECONCILE_SECTION_SCHEMAS[k])
+    .filter(Boolean)
+    .join(',\n')
+  const outputSchema = `{\n${schemaLines}\n}`
+
+  const sectionsListStr = (sectionsToUpdate || []).map(k => `  - ${k}`).join('\n')
+
+  return `You are a rigorous strategic analyst performing a Stage 2 reconcile pass.
+
+A Stage 2 reconcile pass is a TARGETED update — not a full rerun. You are updating only the specific Stage 2 sections impacted by recent Stage 1 refinements. All other Stage 2 sections remain unchanged.
+
+ENTITY: "${entity.name}" (${entity.type})
+ANALYST ROLE: ${intent.role}
+RESEARCH INTENT: ${intent.what}${intent.why ? ' — ' + intent.why : ''}
+
+── STAGE 1 CHANGES SINCE STAGE 2 WAS GENERATED ──────────────────────────────
+
+The following Stage 1 nodes changed after Stage 2 was run. These are the primary driver of this reconcile pass.
+
+${changesBlock}
+
+── CURRENT STAGE 1 BASIS (accepted assertions) ──────────────────────────────
+
+${acceptedBlock}
+
+STAGE 1 SUMMARY:
+${stage1Summary}
+
+── CURRENT STAGE 2 CONTENT FOR IMPACTED SECTIONS ───────────────────────────
+
+These are the current values of the sections you must reconcile:
+
+${currentCtxBlock}
+
+── RECONCILE MISSION ────────────────────────────────────────────────────────
+
+Update ONLY these sections to reflect the Stage 1 changes above:
+${sectionsListStr}
+
+Rules:
+- For each section, produce the best updated version given the changed assertions and any new evidence
+- Where the Stage 1 change is a refinement (not a reversal), sharpen the existing analysis rather than replacing it
+- Where evidence now contradicts the updated assertion, surface that in contradictionMap or refinedAssertions
+- Do NOT update sections not listed above — they are not part of this reconcile scope
+- Do NOT fabricate sources or evidence not retrieved in this session
+- Mark uncertainty explicitly when the new assertion basis is still thin
+
+${policyBlock}
+
+RETRIEVAL STRATEGY: max 3 targeted searches focused on the changed assertions.
+Stop after 3 retrievals or once meaningful evidence is found. Precision over coverage.
+
+Return ONLY valid JSON. Output MUST begin with { and end with }. No preamble, no narration, no backticks.
+Return ONLY the sections listed above — do not include other Stage 2 sections.
+
+${outputSchema}`
+}
+
+// ─── Stage 3 — Strategic Synthesis & Readiness Assessment ────────────────────
+//
+// Stage 3 is pure synthesis — no web search.
+// Context is assembled from Stage 1 + Stage 2 + accepted pivot proposals.
+// Uses callClaude (not callClaudeWithSearch).
+
+export function buildStage3Prompt({
+  entity, intent,
+  stage1Summary, inferredPatterns,
+  acceptedNodes, refinedNodes,
+  stage2Summary, evidenceItems, competitors, entrants,
+  contradictions, adjacencies, openQuestions,
+  stage3ReadinessSummary, acceptedPivotProposals,
+  acceptedRefinements,
+}) {
+  // ── Context block builders ────────────────────────────────────────────────
+
+  const acceptedBlock = acceptedNodes.length > 0
+    ? acceptedNodes.map(n => `  [${n.id}] (${n.type}, ${n.confidence}) "${n.statement}"`).join('\n')
+    : '  None accepted yet — synthesis basis is thin.'
+
+  const refinedBlock = refinedNodes.length > 0
+    ? refinedNodes.map(n =>
+        `  [${n.id}] revised: "${n.statement}"\n        was: "${n.previousStatement}"`
+      ).join('\n')
+    : '  None.'
+
+  const patternsBlock = inferredPatterns.length > 0
+    ? inferredPatterns.map(p => `  - ${p.title}: ${p.insight}`).join('\n')
+    : '  None.'
+
+  const s2SummaryBlock = stage2Summary
+    ? `  What changed:        ${stage2Summary.whatChanged || '—'}
+  Dominant tensions:   ${stage2Summary.dominantTensions || '—'}
+  Likely direction:    ${stage2Summary.likelyDirection || '—'}
+  Strongest evidence:  ${stage2Summary.strongestEvidence || '—'}
+  Weakest areas:       ${stage2Summary.weakestAreas || '—'}`
+    : '  Stage 2 summary not available.'
+
+  const evidenceBlock = evidenceItems.length > 0
+    ? evidenceItems.map(e =>
+        `  [${e.nodeId}] ${e.relationship?.toUpperCase() || 'FOUND'}: ${e.evidenceSummary}`
+      ).join('\n')
+    : '  None.'
+
+  const competitorBlock = competitors.length > 0
+    ? competitors.map(c => `  ${c.name} (${c.type}): ${c.strategicDivergence || c.segmentFit || ''}`).join('\n')
+    : '  None mapped.'
+
+  const entrantsBlock = entrants.length > 0
+    ? entrants.map(e => `  ${e.name}: ${e.strategicImplication}`).join('\n')
+    : '  None identified.'
+
+  const contradictionBlock = contradictions.length > 0
+    ? contradictions.map(c => `  ${c.tensionType}: ${c.description} [${c.resolution}]`).join('\n')
+    : '  None.'
+
+  const adjacencyBlock = adjacencies.length > 0
+    ? adjacencies.map(a => `  ${a.area}: ${a.partnershipLogic}`).join('\n')
+    : '  None.'
+
+  const questionsBlock = openQuestions.length > 0
+    ? openQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')
+    : '  None recorded.'
+
+  const readinessBlock = stage3ReadinessSummary
+    ? Object.entries(stage3ReadinessSummary)
+        .filter(([, v]) => Array.isArray(v) && v.length > 0)
+        .map(([k, arr]) => `  ${k}: ${arr.slice(0, 2).join(' | ')}`)
+        .join('\n')
+    : '  Not available.'
+
+  const pivotBlock = acceptedPivotProposals.length > 0
+    ? acceptedPivotProposals.map((p, i) =>
+        `  ${i + 1}. "${p.title}" — ${p.text}${p.stage3Relevance ? ' [Stage 3: ' + p.stage3Relevance + ']' : ''}`
+      ).join('\n')
+    : '  None.'
+
+  const refinementsBlock = (acceptedRefinements || []).length > 0
+    ? (acceptedRefinements || []).map((r, i) => {
+        const confChange = r.confidenceChange && r.confidenceChange !== 'unchanged'
+          ? ` [confidence: ${r.confidenceChange}]`
+          : ''
+        const typeLabel  = r.refinementType ? ` (${r.refinementType})` : ''
+        const reasonNote = r.reason         ? ` Reason: ${r.reason}`   : ''
+        return (
+          `  ${i + 1}. [${r.nodeId}]${typeLabel}${confChange}\n` +
+          `       OPERATIVE: "${r.revisedStatement}"\n` +
+          `       ORIGINAL:  "${r.originalStatement}"${reasonNote}`
+        )
+      }).join('\n')
+    : '  None.'
+
+  return `You are a rigorous strategic analyst conducting Stage 3 — Strategic Synthesis and Readiness Assessment.
+
+Stage 3 is NOT a final strategy. It synthesizes what the research means, assesses evidence strength, surfaces insight clusters, and determines whether the analysis is ready to become a Stage 4 decision-basis artifact.
+
+CRITICAL RULES:
+- Do NOT produce generic summaries or consulting platitudes
+- Do NOT claim certainty the evidence does not support — mark uncertainty explicitly
+- Do NOT invent facts absent from the Stage 1 / Stage 2 basis provided below
+- Every claim should trace to a Stage 1 node ID, a Stage 2 evidence item, or a clearly labeled analytical inference
+- Use language like "appears to", "suggests", "is unclear" when confidence is limited
+- Do NOT do web searches — synthesize from the provided context only
+
+ENTITY: "${entity.name}" (${entity.type})
+ANALYST ROLE: ${intent.role}
+RESEARCH INTENT: ${intent.what}${intent.why ? ' — ' + intent.why : ''}
+OUTCOME GOAL: ${intent.outcome}
+
+── STAGE 1 BASIS ──────────────────────────────────────────────────────────────
+
+ORIENTATION SUMMARY:
+${stage1Summary}
+
+ACCEPTED ASSERTIONS (highest analytical trust):
+${acceptedBlock}
+
+PRESSURE-TESTED / REVISED ASSERTIONS:
+${refinedBlock}
+
+INFERRED ANALYTICAL PATTERNS:
+${patternsBlock}
+
+── USER-ACCEPTED STAGE 2 REFINEMENTS ──────────────────────────────────────────
+
+USER-VALIDATED ASSERTION REFINEMENTS (downstream-approved overlays, high analytical trust):
+${refinementsBlock}
+
+TREATMENT RULES FOR ACCEPTED REFINEMENTS:
+- The OPERATIVE statement supersedes the original for all synthesis purposes
+- The ORIGINAL is preserved for lineage only — do not synthesize from it
+- Treat accepted refinements with the same trust as accepted Stage 1 assertions
+- Where a refinement contradicts an accepted Stage 1 node for the same nodeId, the refinement takes precedence
+
+── STAGE 2 FINDINGS ───────────────────────────────────────────────────────────
+
+STAGE 2 SUMMARY:
+${s2SummaryBlock}
+
+EVIDENCE CONSOLIDATION:
+${evidenceBlock}
+
+COMPETITOR LANDSCAPE:
+${competitorBlock}
+
+EMERGING ENTRANTS:
+${entrantsBlock}
+
+STRATEGIC TENSIONS / CONTRADICTIONS:
+${contradictionBlock}
+
+ADJACENCY OPPORTUNITIES:
+${adjacencyBlock}
+
+OPEN QUESTIONS (Stage 1 + Stage 2):
+${questionsBlock}
+
+STAGE 2 READINESS SIGNALS:
+${readinessBlock}
+
+── ACCEPTED PIVOT PROPOSALS ───────────────────────────────────────────────────
+
+USER-APPROVED ANALYTICAL REFINEMENTS (treat as high-trust additions to the basis):
+${pivotBlock}
+
+── SYNTHESIS MISSION ──────────────────────────────────────────────────────────
+
+Produce a Stage 3 strategic synthesis answering:
+1. What is the strongest current interpretation of the evidence?
+2. What insight clusters are forming across the evidence?
+3. What strategic implications matter most?
+4. What plausible strategic options exist?
+5. What risks, constraints, and unknowns remain?
+6. What would prepare an audience to trust this analysis?
+7. Is the analysis ready to become a Stage 4 decision-basis artifact?
+8. What process-level learning signals should Stage 5 capture?
+
+OUTPUT CONSTRAINTS:
+- thesis.text: ≤100 words; rationale: ≤40 words
+- evidenceMap: 4–7 items; each field ≤25 words
+- insightClusters: 3–5; insight ≤80 words; other text fields ≤40 words; supportingEvidence ≤3 strings
+- strategicImplications: 4–6; each field ≤40 words
+- strategicOptions: 3–5; each field ≤60 words
+- risksConstraintsUnknowns: 4–7; each field ≤40 words
+- audienceConfidenceNotes arrays: ≤4 items, ≤30 words each; reasoningPath ≤60 words; defensibilityNotes ≤50 words
+- stage4Readiness.rationale: ≤50 words; arrays ≤3 items
+- stage5LearningSignals: 3–5; each field ≤40 words
+- Insight clusters and strategic options must represent distinct analytical groupings — do not repeat the same point in different form
+
+Return ONLY valid JSON. Output MUST begin with { and end with }. No preamble, no markdown, no backticks:
+{
+  "thesis": {
+    "text": "≤100 words: the strongest current interpretation of the evidence — not a conclusion, a synthesis",
+    "confidence": "Low|Medium|High",
+    "rationale": "≤40 words: why this confidence level is appropriate given the evidence base"
+  },
+  "evidenceMap": [
+    {
+      "observation": "≤25 words: specific claim or observation from Stage 1 or Stage 2",
+      "evidenceBasis": "≤25 words: what grounds this — Stage 1 node, Stage 2 evidence, or inference",
+      "lineageRef": "node id or stage2 section name — e.g. n3, evidenceConsolidation, competitorMap",
+      "scope": "company|industry|domain|workflow|cross-scope",
+      "strength": "weak|moderate|strong",
+      "implication": "≤25 words: what this means for the analysis"
+    }
+  ],
+  "insightClusters": [
+    {
+      "title": "≤8 words",
+      "insight": "≤80 words: synthesized analytical insight — not a summary, an interpretation",
+      "supportingEvidence": ["≤3 strings referencing Stage 1 nodes, Stage 2 items, or pivot proposals"],
+      "whyItMatters": "≤40 words",
+      "strategicImplication": "≤40 words",
+      "confidence": "Low|Medium|High"
+    }
+  ],
+  "strategicImplications": [
+    {
+      "implication": "≤40 words",
+      "stakeholders": "≤20 words",
+      "relevance": "≤25 words: product, workflow, or business relevance",
+      "evidenceBasis": "≤25 words",
+      "confidence": "Low|Medium|High"
+    }
+  ],
+  "strategicOptions": [
+    {
+      "title": "≤8 words",
+      "description": "≤60 words",
+      "plausibilityLevel": "Low|Medium|High",
+      "plausibility": "≤50 words: why this option is plausible given the evidence — expand on the level",
+      "supportingEvidence": "≤40 words",
+      "validationNeeded": "≤50 words: what would need to be confirmed before pursuing",
+      "risksTradeoffs": "≤50 words"
+    }
+  ],
+  "risksConstraintsUnknowns": [
+    {
+      "item": "≤25 words",
+      "whyItMatters": "≤35 words",
+      "consequenceIfIgnored": "≤35 words",
+      "investigationPath": "≤35 words"
+    }
+  ],
+  "audienceConfidenceNotes": {
+    "trustRequirements": ["≤4 strings — what an audience would need to see to trust this analysis"],
+    "reasoningPath": "≤60 words: the analytical logic chain from evidence to synthesis",
+    "tradeoffsToAcknowledge": ["≤3 strings — tensions or tradeoffs that should be surfaced honestly"],
+    "evidenceGaps": ["≤4 strings — specific gaps that limit defensibility"],
+    "defensibilityNotes": "≤50 words: overall defensibility assessment and framing guidance"
+  },
+  "stage4Readiness": {
+    "status": "Not Ready|Partially Ready|Ready",
+    "rationale": "≤50 words: why this readiness level",
+    "missingInputs": ["≤3 strings — what would move readiness higher"],
+    "artifactCandidates": ["≤3 strings — specific artifact types that fit the current analysis"],
+    "suggestedArtifactType": "one of: opportunity memo | product thesis | discovery brief | portfolio case study | stakeholder interview plan | strategy decision brief | mock PRD"
+  },
+  "stage5LearningSignals": [
+    {
+      "signal": "≤40 words: a process-level observation about what worked or should change",
+      "stage": "Stage 1|Stage 2|Stage 3|Stage 4-prep",
+      "whyItMatters": "≤30 words",
+      "recommendedFutureBehavior": "≤40 words"
+    }
+  ]
+}`
+}
+
+// ─── Stage 3 mock data — Finlytica demo ──────────────────────────────────────
+// Demo-only. The schema and component logic are fully generic.
+
+export const MOCK_V4_STAGE3 = {
+  thesis: {
+    text: 'Finlytica occupies a defensible but constrained niche in community banking analytics by leading with managed services as trust infrastructure rather than as a delivery efficiency play. The services-led model is simultaneously a competitive moat and a unit-economics ceiling: it generates the relationships that enable adoption but limits growth without platform leverage or self-service optionality. The central strategic question is not whether to build a platform tier, but when and how — and whether that decision is urgent given competitive consolidation signals.',
+    confidence: 'Medium',
+    rationale: 'Core thesis is grounded in multiple independent evidence sources. Commercial model specifics remain unconfirmed from primary sources, limiting confidence to medium.',
+  },
+  evidenceMap: [
+    {
+      observation: 'Community banks make analytics decisions by relationship and intuition, not structured data analysis',
+      evidenceBasis: 'Stage 1 finding n1 — high confidence, inferred from industry patterns',
+      lineageRef: 'n1',
+      scope: 'industry',
+      strength: 'strong',
+      implication: 'Creates structural demand for externally-delivered analytics with a trust-first entry motion',
+    },
+    {
+      observation: "Finlytica positions as an 'analytics partnership,' not a SaaS product, per its own published language",
+      evidenceBasis: 'Stage 2 evidence retrieval — direct evidence from finlytica.com',
+      lineageRef: 'evidenceConsolidation',
+      scope: 'company',
+      strength: 'strong',
+      implication: 'Managed-service model confirmed directionally; per-seat SaaS pricing unconfirmed',
+    },
+    {
+      observation: 'FDIC third-party risk guidance explicitly governs analytics vendors in community banking',
+      evidenceBasis: 'Stage 2 retrieval — verified regulatory source',
+      lineageRef: 'evidenceConsolidation',
+      scope: 'industry',
+      strength: 'strong',
+      implication: 'Regulatory constraint is structural — compliance depth creates moat and ceiling simultaneously',
+    },
+    {
+      observation: 'Adjacent platform vendors (Nymbus, Apiture) bundle analytics rather than lead with analytics depth',
+      evidenceBasis: 'Stage 2 competitor map',
+      lineageRef: 'competitorMap',
+      scope: 'industry',
+      strength: 'moderate',
+      implication: "Standalone analytics positioning is currently differentiated but vulnerable to platform roadmap additions",
+    },
+    {
+      observation: 'Comparable vendors completed managed-to-self-service tier transitions in 12–18 months in adjacent segments',
+      evidenceBasis: 'Stage 2 investigative pivot — operational constraints',
+      lineageRef: 'pivots',
+      scope: 'domain',
+      strength: 'moderate',
+      implication: 'Platform transition is achievable near-term; competitive window may be shorter than assumed',
+    },
+  ],
+  insightClusters: [
+    {
+      title: 'Services as trust infrastructure, not delivery mechanism',
+      insight: "Finlytica's advisory engagement is not an inefficiency to be platformized away — it is the actual value proposition in a market where analytics adoption is blocked by trust, not technology. The platform, if built, should be designed to deliver data access, not replace the advisory interpretation layer. This distinction is the key to introducing a self-service tier without cannibalizing renewal-driving relationships.",
+      supportingEvidence: ['n1 (analytics-light market)', 'n5 (consultative sales pattern)', 'Stage 2 retainer pricing evidence'],
+      whyItMatters: 'Misframing the advisory relationship as a cost to be eliminated leads to product decisions that undermine the core retention driver.',
+      strategicImplication: 'Self-service tier should be positioned as data transparency, not analytical delivery — preserving advisory for interpretation while enabling scale.',
+      confidence: 'Medium',
+    },
+    {
+      title: 'Regulatory depth as underexploited competitive moat',
+      insight: 'FDIC third-party risk governance makes compliance depth a selection criterion, not merely a qualification bar. Finlytica\'s specialization creates switching costs and an expertise barrier that generic analytics tools cannot clear. Compliance reporting automation — using the same underlying data — is the highest-leverage adjacency because it deepens this moat while extending engagement footprint and creating natural upsell.',
+      supportingEvidence: ['n8 (regulatory constraint — verified fact)', 'Stage 2 FDIC evidence', 'Stage 2 adjacency opportunity: compliance reporting'],
+      whyItMatters: 'The regulatory moat is currently an implicit advantage. Making it explicit and extending it through compliance automation converts a constraint into a structural differentiator.',
+      strategicImplication: 'Compliance reporting automation is the adjacency with lowest execution risk and highest strategic leverage — prioritize over general platform building.',
+      confidence: 'High',
+    },
+    {
+      title: 'Platform transition timing is more urgent than roadmap suggests',
+      insight: "Evidence from adjacent segments places the managed-to-self-service migration window at 12–18 months — far shorter than a traditional multi-year platform investment horizon. The risk is not that self-service is technically difficult, but that Finlytica delays while a platform competitor adds bundled analytics to their community banking offering. The competitive window for establishing the analytics partnership model as the default may be shorter than internal planning assumes.",
+      supportingEvidence: ['Stage 2 pivot evidence — operational constraints', 'n9 revised (upmarket constraint)', 'Competitor analysis: platform player roadmap signals'],
+      whyItMatters: 'If platform competitors add native analytics depth, the standalone analytics positioning collapses. Timing is the variable the analysis cannot confirm but cannot ignore.',
+      strategicImplication: "The self-service tier decision is time-bounded. Delaying past the competitive window makes the transition reactive rather than strategic.",
+      confidence: 'Low',
+    },
+  ],
+  strategicImplications: [
+    {
+      implication: 'The managed-service model creates a hiring-dependent growth curve — each new client requires proportional advisory capacity, limiting scalable revenue without platform leverage',
+      stakeholders: 'Executive team, investors, future acquirers',
+      relevance: 'Directly determines scalability, headcount planning, and valuation trajectory',
+      evidenceBasis: 'Stage 2 services-vs-scale contradiction; Stage 1 n3, n5',
+      confidence: 'Medium',
+    },
+    {
+      implication: 'Compliance reporting automation is the highest-value adjacent capability — lower execution risk than platform rebuild and extends the regulatory moat',
+      stakeholders: 'Product team, CFO/COO buyer persona, compliance officers',
+      relevance: 'Adjacency opportunity with natural fit to existing data scope and client relationships',
+      evidenceBasis: 'Stage 2 adjacency opportunity; n8 regulatory constraint; FDIC evidence',
+      confidence: 'Medium',
+    },
+    {
+      implication: 'Upmarket expansion to regional banks is plausible but structurally constrained — regional banks expect self-service analytics maturity Finlytica does not currently offer',
+      stakeholders: 'Growth team, enterprise sales function',
+      relevance: 'Shapes whether growth is vertical (deeper community banking) or horizontal (adjacent segments)',
+      evidenceBasis: 'Stage 2 refined assertion on n9; competitor evidence on regional bank expectations',
+      confidence: 'Medium',
+    },
+    {
+      implication: 'AI-native explanation layer vendors represent a time-bounded threat to the explainability opportunity — the differentiation window is estimated at 2–3 years',
+      stakeholders: 'Product strategy, competitive intelligence',
+      relevance: 'Shapes urgency of explainability feature investment vs. platform investment',
+      evidenceBasis: 'Stage 2 emerging entrants — AI-native explanation layer category',
+      confidence: 'Low',
+    },
+  ],
+  strategicOptions: [
+    {
+      title: 'Deepen compliance adjacency via partnership',
+      description: 'Partner with a compliance reporting specialist to offer regulatory analytics automation as an adjacent service layer. Position compliance reporting as a natural extension of the analytics partnership — using data already in scope.',
+      plausibilityLevel: 'High',
+      plausibility: 'Regulatory constraint is structural and the data is already within the engagement footprint. Advisory relationship provides the trust context for a natural expansion conversation.',
+      supportingEvidence: 'Stage 2 adjacency opportunity; FDIC regulatory evidence; n8 constraint node; compliance moat insight cluster',
+      validationNeeded: 'Identify viable compliance reporting partners; validate that CFO/COO buyers see compliance and analytics as naturally bundled; confirm incremental willingness-to-pay',
+      risksTradeoffs: 'Compliance interpretation errors carry reputational and liability exposure beyond what an analytics vendor should own. Partnership dependency introduces vendor risk.',
+    },
+    {
+      title: 'Introduce a self-service data access tier',
+      description: "Build a lightweight self-service layer — automated dashboards and report delivery — positioned as data transparency, not analytical delivery. Advisory remains the interpretation and strategy layer.",
+      plausibilityLevel: 'Medium',
+      plausibility: "Comparable vendors completed this transition in 12–18 months. The framing matters: self-service as 'data access complement' to advisory, not 'advisory replacement.'",
+      supportingEvidence: 'Stage 2 pivot evidence on comparable vendor transitions; Stage 2 refinement of n9; operational constraints pivot insight',
+      validationNeeded: 'Validate that community bank executives accept self-service for data access while retaining advisory for interpretation. Validate pricing model — additive or substitutional?',
+      risksTradeoffs: 'Advisory revenue cannibalization if self-service is perceived as full replacement. Requires engineering investment before growth return. Framing error is high-consequence.',
+    },
+    {
+      title: 'Concentrate vertically in community banking',
+      description: 'Resist upmarket expansion and deepen analytics capability within community banking — broader asset-size coverage, deeper workflow integration (lending, deposit, operations), richer peer benchmarking.',
+      plausibilityLevel: 'Medium',
+      plausibility: 'The market is fragmented and analytically underserved. Deeper specialization creates a more defensible position before platform competitors consolidate the segment.',
+      supportingEvidence: 'n1 (analytics-light market); n4 (CFO/COO buyer); regulatory moat from n8; Stage 2 evidence on segment fit',
+      validationNeeded: 'Validate addressable market size within community banking at viable retention economics. Confirm deeper vertical investment creates pricing power rather than commoditization.',
+      risksTradeoffs: 'Concentrates risk in a single segment. Limits exit optionality if a platform competitor acquires or builds into the community banking analytics space.',
+    },
+  ],
+  risksConstraintsUnknowns: [
+    {
+      item: 'Revenue model specifics unconfirmed — retainer, per-bank, outcome-based, or hybrid structure unknown',
+      whyItMatters: 'Every strategic option — unit economics, scaling mechanism, investor narrative — depends on the actual commercial model',
+      consequenceIfIgnored: 'Strategic recommendations may be built on incorrect commercial model assumptions, invalidating the entire analysis basis',
+      investigationPath: 'Review job postings for pricing/account management signals; seek customer testimonials or case studies; find analyst or investor coverage',
+    },
+    {
+      item: 'Advisory capacity as growth constraint — client growth may require proportional headcount without platform leverage',
+      whyItMatters: 'Services-led models have hiring-dependent growth curves that limit revenue scaling without structural change',
+      consequenceIfIgnored: 'Growth targets become unachievable without proactive delivery model transformation',
+      investigationPath: 'Estimate client-to-advisor ratio from available team size data; benchmark against comparable managed analytics vendors in adjacent segments',
+    },
+    {
+      item: 'Platform competitor entry timing — Nymbus or Apiture analytics depth expansion is a time-bounded risk',
+      whyItMatters: "Finlytica's standalone differentiation depends on platform players remaining analytically underdeveloped in community banking",
+      consequenceIfIgnored: 'The window for establishing analytics partnership as the default model closes if a platform player adds bundled analytics at competitive price',
+      investigationPath: 'Monitor platform competitor product roadmap announcements and analytics-specific hiring signals quarterly',
+    },
+    {
+      item: 'Self-service cannibalization risk — unknown whether self-service tier substitutes or complements advisory revenue',
+      whyItMatters: 'The self-service tier option viability depends entirely on whether framing can preserve advisory renewal',
+      consequenceIfIgnored: 'Premature or miframed self-service introduction could undermine the trust relationship driving the core business',
+      investigationPath: 'Research comparable vendor transition case studies; validate framing distinction with target customer discovery interviews before building',
+    },
+    {
+      item: 'Customer tenure and retention data absent — advisory relationship stickiness is inferred, not measured',
+      whyItMatters: 'The trust-based retention narrative is the central assumption of the entire thesis — it has not been validated with cohort data',
+      consequenceIfIgnored: 'Analysis may overstate the durability of the competitive moat if retention is lower than assumed',
+      investigationPath: 'Seek customer references or case study publications; look for NPS or retention signals in any available press or analyst coverage',
+    },
+  ],
+  audienceConfidenceNotes: {
+    trustRequirements: [
+      'Primary source confirmation of the commercial model — services-led positioning is directional, not contractually confirmed',
+      'Customer tenure and retention evidence — the trust-based moat claim is an inference, not a measured fact',
+      'Explicit labeling of what is verified, what is inferred, and what is hypothetical throughout any Stage 4 artifact',
+      'Acknowledgment that platform competitor timing is a risk scenario, not a confirmed threat',
+    ],
+    reasoningPath: 'The analysis moves from verified structural constraints (regulatory environment, market fragmentation) → inferred commercial positioning (services-led entry) → analytical synthesis (scaling tension, timing decision). The logical chain is coherent but the commercial model assumption is load-bearing and unconfirmed.',
+    tradeoffsToAcknowledge: [
+      'Services-led model is both moat and ceiling — the analysis holds this tension without forcing false resolution',
+      'Self-service tier could strengthen or destroy advisory revenue depending on framing — both outcomes are plausible and should be disclosed',
+    ],
+    evidenceGaps: [
+      'No primary source confirmation of pricing structure or contract terms',
+      'No customer interview data on advisory relationship tenure or renewal drivers',
+      'No internal roadmap visibility on self-service or compliance adjacency interest',
+      'Platform competitor timeline for community banking analytics expansion is unconfirmed',
+    ],
+    defensibilityNotes: 'This analysis is defensible as a structured analytical point of view grounded in public evidence and industry patterns. It must be framed as a research-based hypothesis, not a confirmed business assessment. Any Stage 4 artifact should carry explicit confidence labels per claim.',
+  },
+  stage4Readiness: {
+    status: 'Partially Ready',
+    rationale: 'Core thesis and insight clusters are analytically grounded and coherent. The commercial model gap is significant — a Stage 4 artifact can be produced but must frame this explicitly as an open assumption, not a resolved fact.',
+    missingInputs: [
+      'Confirmed commercial model (pricing structure, contract terms)',
+      'Customer retention or tenure data to validate the trust-moat claim',
+      'Finlytica team size or client-to-advisor ratio estimate',
+    ],
+    artifactCandidates: [
+      'Discovery brief — questions a PM or BA would need answered in a customer or stakeholder discovery call',
+      'Product thesis memo — what Finlytica is building, why it matters, and what the strategic inflection decisions are',
+      'Competitive intelligence brief — Finlytica positioning against platform players with evidence',
+    ],
+    suggestedArtifactType: 'discovery brief',
+  },
+  stage5LearningSignals: [
+    {
+      signal: 'Stage 1 commercial model assumption (n3) was marked low-confidence but became load-bearing across Stage 2 and Stage 3 — it should have been flagged as a primary investigation target before proceeding',
+      stage: 'Stage 1',
+      whyItMatters: 'Low-confidence assumptions that are structurally central distort the entire analysis if wrong — early identification enables earlier pressure testing',
+      recommendedFutureBehavior: 'At Stage 1 completion, identify which low-confidence nodes are depended on by multiple downstream assertions and surface them as priority pressure test candidates before Stage 2',
+    },
+    {
+      signal: 'Stage 2 competitor map was initialized with two vendors and required manual cap increases — competitive context was underweighted relative to its analytical importance',
+      stage: 'Stage 2',
+      whyItMatters: 'A stronger competitor map would have surfaced the platform consolidation timing risk earlier and sharpened the strategic options earlier in the workflow',
+      recommendedFutureBehavior: 'For entities in fragmented markets with known platform competition, prompt Stage 2 to prioritize competitor map breadth and emerging entrant coverage over evidence consolidation depth',
+    },
+    {
+      signal: 'The operational constraints pivot produced the most analytically useful finding (12–18 month transition window) — it should have been recommended as high priority, not medium',
+      stage: 'Stage 2',
+      whyItMatters: 'The pivot evidence materially changed the strategic synthesis and the Stage 3 timing insight would be absent without it',
+      recommendedFutureBehavior: "In the pivot scoring algorithm, entities with active services-vs-scale contradictions in Stage 2 should trigger 'high priority' for operational constraints pivot, not medium",
+    },
+    {
+      signal: 'Stage 3 synthesis was limited by the absence of primary source data on the commercial model — this gap was known from Stage 1 but not resolved before Stage 3',
+      stage: 'Stage 3',
+      whyItMatters: 'A load-bearing assumption that reaches Stage 3 unvalidated constrains the entire synthesis and caps Stage 4 readiness at Partially Ready',
+      recommendedFutureBehavior: 'Before initiating Stage 3, surface any unresolved low-confidence nodes that appear in Stage 2 evidence as load-bearing — prompt the user to attempt resolution or explicitly accept the gap',
+    },
+  ],
+}
