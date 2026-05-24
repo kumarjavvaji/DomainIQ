@@ -1834,3 +1834,548 @@ export const MOCK_V4_STAGE3 = {
     },
   ],
 }
+
+// ─── Evidence Refinement Prompt ────────────────────────────────────────────────
+// Used when user selects text inside a Stage 3 Evidence Map item and submits
+// a custom prompt to explain, challenge, or refine the selected evidence.
+
+export function buildEvidenceRefinementPrompt({
+  thesis,
+  evidenceItem,
+  selectedText,
+  userPrompt,
+  stage1Nodes = [],
+  stage2Evidence = [],
+}) {
+  const lineageNote = evidenceItem.lineageRef
+    ? `Lineage ref: ${evidenceItem.lineageRef}`
+    : 'No lineage ref provided.'
+
+  const s1Block = stage1Nodes.slice(0, 4)
+    .map(n => `  [${n.id}] (${n.type}, ${n.confidence}) "${n.statement}"`)
+    .join('\n') || '  None.'
+
+  const s2Block = stage2Evidence.slice(0, 3)
+    .map(e => `  [${e.nodeId}] ${e.relationship}: ${e.evidenceSummary}`)
+    .join('\n') || '  None.'
+
+  return `You are a rigorous strategic analyst examining a specific evidence item in a Stage 3 synthesis.
+
+STAGE 3 THESIS (context):
+${thesis || 'Not available.'}
+
+EVIDENCE ITEM:
+  Observation: ${evidenceItem.observation || '—'}
+  Evidence basis: ${evidenceItem.evidenceBasis || '—'}
+  Scope: ${evidenceItem.scope || '—'}
+  Strength: ${evidenceItem.strength || '—'}
+  Implication: ${evidenceItem.implication || '—'}
+  ${lineageNote}
+
+SELECTED TEXT (the specific phrase the user is examining):
+"${selectedText}"
+
+USER PROMPT:
+${userPrompt}
+
+LINEAGE — STAGE 1 NODES:
+${s1Block}
+
+LINEAGE — STAGE 2 EVIDENCE:
+${s2Block}
+
+CRITICAL RULES:
+- Respond only to what was asked. Do not rewrite the whole item if the user asked to explain.
+- Set strategyImpact to "substantial" ONLY if the refinement materially changes what strategic options make sense — not for minor clarifications.
+- Include suggestedEvidenceUpdate keys ONLY for fields that genuinely improve. Omit keys that do not need updating.
+- Do not fabricate sources or evidence not grounded in the provided context.
+
+Return ONLY valid JSON. No markdown, no backticks:
+{
+  "explanation": "1-3 sentences directly addressing the user prompt",
+  "refinedEvidenceText": "tighter version of the observation if refining — or repeat original if not refining",
+  "refinementType": "explain|challenge|clarify|narrow|expand|product_implication|risk_or_constraint",
+  "confidenceImpact": "none|low|medium|high",
+  "strategyImpact": "none|minor|substantial",
+  "rationale": "1-2 sentences: why this refinement type and these impact levels",
+  "suggestedEvidenceUpdate": {
+    "observation": "updated observation — omit if unchanged",
+    "evidenceBasis": "updated evidence basis — omit if unchanged",
+    "implication": "updated implication — omit if unchanged",
+    "strength": "weak|moderate|strong — omit if unchanged"
+  }
+}`
+}
+
+// ─── Strategy Options Targeted Update ────────────────────────────────────────
+// Used after a substantial evidence refinement is applied to refresh only
+// strategicOptions — same field name as the Stage 3 schema output.
+
+export function buildStrategyOptionsUpdatePrompt({
+  thesis,
+  refinedEvidenceMap,
+  insightClusters,
+  risks,
+  currentStrategicOptions,
+}) {
+  const evidenceBlock = (refinedEvidenceMap || [])
+    .map((e, i) =>
+      `  ${i + 1}. [${e.scope || 'general'}${e._refined ? ', USER-REFINED' : ''}] ${e.observation}` +
+      (e.implication ? `\n     → ${e.implication}` : '')
+    ).join('\n') || '  None.'
+
+  const clustersBlock = (insightClusters || [])
+    .map(c => `  - ${c.title}: ${(c.insight || '').slice(0, 100)}…`)
+    .join('\n') || '  None.'
+
+  const risksBlock = (risks || [])
+    .map(r => `  - ${r.item}`)
+    .join('\n') || '  None.'
+
+  const currentBlock = (currentStrategicOptions || [])
+    .map((o, i) => `  ${i + 1}. "${o.title}": ${(o.description || '').slice(0, 80)}…`)
+    .join('\n') || '  None.'
+
+  const optCount = (currentStrategicOptions || []).length || 3
+
+  return `You are a strategic analyst updating strategic options after the Evidence Map was user-refined.
+
+One or more Evidence Map items are marked USER-REFINED above. Update strategic options to reflect these changes. Preserve options where the evidence change has no material effect.
+
+STAGE 3 THESIS:
+${thesis || 'Not available.'}
+
+REFINED EVIDENCE MAP:
+${evidenceBlock}
+
+INSIGHT CLUSTERS:
+${clustersBlock}
+
+RISKS AND CONSTRAINTS:
+${risksBlock}
+
+CURRENT STRATEGIC OPTIONS (update in-place — do not replace wholesale):
+${currentBlock}
+
+CONSTRAINTS:
+- Return exactly ${optCount} strategic options
+- Each field ≤60 words
+- Do not invent evidence not present above
+- Return ONLY valid JSON, no markdown, no backticks:
+
+{
+  "strategicOptions": [
+    {
+      "title": "≤8 words",
+      "description": "≤60 words",
+      "plausibilityLevel": "Low|Medium|High",
+      "plausibility": "≤50 words",
+      "supportingEvidence": "≤40 words",
+      "validationNeeded": "≤50 words",
+      "risksTradeoffs": "≤50 words"
+    }
+  ]
+}`
+}
+
+// ─── Outcome-Driven Strategy Menu ────────────────────────────────────────────
+// Separate API call from Stage 3 synthesis — triggered by user button.
+// Generates exactly 10 strategy options with full execution plans.
+// Budget: 8000 tokens.
+
+export function buildStrategyMenuPrompt({ thesis, evidenceMap, insightClusters, risks, strategicOptions, entity }) {
+  const evidenceBlock = (evidenceMap || [])
+    .map((e, i) =>
+      `  ${i + 1}. [${e.scope || 'general'}${e._refined ? ', USER-REFINED' : ''}] ${e.observation}` +
+      (e.implication ? `\n     → ${e.implication}` : '')
+    ).join('\n') || '  None.'
+
+  const clustersBlock = (insightClusters || [])
+    .map(c => `  - ${c.title}: ${(c.insight || '').slice(0, 120)}`)
+    .join('\n') || '  None.'
+
+  const risksBlock = (risks || [])
+    .map(r => `  - [${r.type || 'risk'}] ${r.item}`)
+    .join('\n') || '  None.'
+
+  const optionsBlock = (strategicOptions || [])
+    .map((o, i) => `  ${i + 1}. ${o.title} (${o.plausibilityLevel || 'Medium'}): ${(o.description || '').slice(0, 80)}`)
+    .join('\n') || '  None.'
+
+  return `You are a senior strategy consultant producing an Outcome-Driven Strategy Menu for ${entity?.name || 'the entity under analysis'}.
+
+STAGE 3 THESIS:
+${thesis?.text || thesis || 'Not available.'}
+
+EVIDENCE MAP:
+${evidenceBlock}
+
+INSIGHT CLUSTERS:
+${clustersBlock}
+
+RISKS AND CONSTRAINTS:
+${risksBlock}
+
+EXISTING STRATEGIC OPTIONS (extend and operationalize — do not duplicate verbatim):
+${optionsBlock}
+
+TASK:
+Generate exactly 10 outcome-driven strategy options covering the full posture spectrum from aggressive investment to divestment. Each option must be grounded in the evidence above.
+
+INVESTMENT POSTURE — use exactly one of: "double down" | "selective investment" | "maintain" | "deprioritize" | "divest/reallocate"
+
+EXECUTION PLAN CONSTRAINTS (per option):
+  - Each paragraph: 40–70 words
+  - projectManagementPlan: sprint structure, ownership, milestones, governance cadence
+  - engineeringPlan: architecture decisions, APIs, integrations, build vs buy, technical risk
+  - impactAnalysisPlan: metrics, measurement approach, expected timeline to measurable result
+  - optionalAdditionalExecutionNotes: risk or change management — omit the key entirely if not material
+
+Return ONLY valid JSON, no markdown, no backticks:
+
+{
+  "strategyMenu": [
+    {
+      "id": "sm_1",
+      "strategyName": "≤8 words, action-oriented",
+      "investmentPosture": "double down",
+      "outcomeServed": "≤12 words: the business outcome this achieves",
+      "whatThisMeans": "≤50 words: concrete operational meaning",
+      "evidenceSupporting": "≤50 words: evidence from the map above that supports this",
+      "evidenceAgainst": "≤40 words: evidence or risks that argue against this",
+      "conditionsForChoosing": "≤40 words: when or if conditions make this the right call",
+      "tradeoffs": "≤40 words: what you give up",
+      "nextValidationStep": "≤30 words: the one action that would confirm or refute this option",
+      "stage4ArtifactUse": "≤30 words: how a Stage 4 artifact built from this option would be used",
+      "executionPlan": {
+        "projectManagementPlan": "40–70 words on sprint structure, ownership, milestones, governance",
+        "engineeringPlan": "40–70 words on architecture, APIs, integrations, build vs buy",
+        "impactAnalysisPlan": "40–70 words on metrics, measurement, expected timeline"
+      }
+    }
+  ]
+}`
+}
+
+// ─── Stage 4 Artifact Generation ─────────────────────────────────────────────
+// Generates a 500–700 word one-page decision-basis artifact from a selected
+// strategy menu option and a persona configuration.
+// Budget: 4000 tokens.
+
+export function buildStage4ArtifactPrompt({ entity, thesis, evidenceMap, insightClusters, risks, selectedStrategy, persona }) {
+  const evidenceBlock = (evidenceMap || []).slice(0, 8)
+    .map((e, i) => `  ${i + 1}. ${e.observation}${e.implication ? ' → ' + e.implication : ''}`)
+    .join('\n') || '  None.'
+
+  const clustersBlock = (insightClusters || []).slice(0, 5)
+    .map(c => `  - ${c.title}: ${(c.insight || '').slice(0, 100)}`)
+    .join('\n') || '  None.'
+
+  const risksBlock = (risks || []).slice(0, 5)
+    .map(r => `  - ${r.item}`)
+    .join('\n') || '  None.'
+
+  const strat = selectedStrategy || {}
+  const pers = persona || {}
+  const sideLabel = pers.side === 'customer' ? 'buyer/user perspective' : 'vendor/operator perspective'
+
+  return `You are a strategy consultant writing a one-page decision-basis artifact for ${entity?.name || 'the subject entity'}.
+
+PERSONA / AUDIENCE:
+  Side: ${pers.side || 'provider'} (${sideLabel})
+  Role: ${pers.role || 'not specified'}
+  Tone emphasis: ${(pers.toneEmphasis || []).join(', ') || 'balanced'}
+
+SELECTED STRATEGY: "${strat.strategyName}"
+  Investment posture: ${strat.investmentPosture}
+  Outcome served: ${strat.outcomeServed}
+  What this means: ${strat.whatThisMeans}
+  Evidence supporting: ${strat.evidenceSupporting}
+  Evidence against: ${strat.evidenceAgainst}
+  Conditions for choosing: ${strat.conditionsForChoosing}
+  Tradeoffs: ${strat.tradeoffs}
+  Next validation step: ${strat.nextValidationStep}
+  Execution — PM: ${strat.executionPlan?.projectManagementPlan || ''}
+  Execution — Eng: ${strat.executionPlan?.engineeringPlan || ''}
+  Execution — Impact: ${strat.executionPlan?.impactAnalysisPlan || ''}
+${strat.executionPlan?.optionalAdditionalExecutionNotes ? '  Execution — Additional: ' + strat.executionPlan.optionalAdditionalExecutionNotes : ''}
+
+THESIS:
+${thesis?.text || thesis || 'Not available.'}
+
+EVIDENCE (top items):
+${evidenceBlock}
+
+INSIGHT CLUSTERS:
+${clustersBlock}
+
+RISKS:
+${risksBlock}
+
+TASK:
+Write a structured one-page decision-basis artifact. Total word count across all sections: 500–700 words.
+Adapt tone and framing to the persona above.
+  Provider-side: operational authority, vendor credibility, build/buy framing, ROI to the business.
+  Customer-side: value realization, risk to the buyer, TCO, switching cost framing.
+
+Return ONLY valid JSON, no markdown, no backticks:
+
+{
+  "artifactTitle": "≤10 words",
+  "subtitle": "≤15 words: strategy posture + audience signal",
+  "personaSummary": "≤20 words describing the intended reader",
+  "sections": [
+    { "heading": "Section heading", "body": "80–140 words. Minimum 4 sections, maximum 6." }
+  ],
+  "keyDecisions": [
+    "Decision point 1 — ≤15 words",
+    "Decision point 2",
+    "Decision point 3"
+  ],
+  "callToAction": "≤40 words: the one thing the reader should do next",
+  "validationCheckpoints": [
+    "≤15 words each — 2 to 3 items"
+  ],
+  "readinessWarnings": [
+    "≤20 words each — conditions that would invalidate this strategy — 1 to 3 items"
+  ]
+}`
+}
+
+// ─── Mock data — Strategy Menu ────────────────────────────────────────────────
+
+export const MOCK_STRATEGY_MENU = {
+  strategyMenu: [
+    {
+      id: 'sm_1',
+      strategyName: 'Accelerate core Calendar platform investment',
+      investmentPosture: 'double down',
+      outcomeServed: 'Capture scheduling workflow ownership in mid-market HCM',
+      whatThisMeans: 'Increase Calendar engineering headcount, ship bi-weekly, and position the module as the scheduling layer that displaces point solutions like Calendly and Kronos within the Paylocity customer base.',
+      evidenceSupporting: 'Calendar has 65% adoption in enterprise tier. Scheduling is the highest-frequency HCM touchpoint. Paylocity NPS advantage concentrates in workflow automation cohorts.',
+      evidenceAgainst: 'Mid-market HR teams report change fatigue from rapid release cycles. Calendar UI complexity is a top-3 support ticket driver.',
+      conditionsForChoosing: 'Win/loss analysis confirms Calendar is a leading deal differentiator in enterprise accounts over the last two quarters.',
+      tradeoffs: 'Pulls roadmap bandwidth from Benefits and Talent modules. Risks over-engineering for SMB customers who use fewer features.',
+      nextValidationStep: 'Run win/loss analysis on 30 enterprise deals from last 2 quarters — was Calendar cited as a differentiator?',
+      stage4ArtifactUse: 'Decision brief for CPO on roadmap prioritization and resource allocation for the next fiscal year.',
+      executionPlan: {
+        projectManagementPlan: 'Run 2-week sprints with dedicated Calendar squad of 6 engineers, 1 PM, and 1 designer. Monthly stakeholder readout with CPO. Gate major releases through a Change Advisory Board. Milestone: GA of scheduling automation v2 in Q3. OKR: reduce time-to-first-schedule by 40%.',
+        engineeringPlan: 'Refactor Calendar to event-driven architecture using the existing Paylocity message bus. Expose scheduling APIs for third-party integration. Build core availability engine in-house; buy time-zone normalization library. Primary risk: data model migration across 50K+ active calendars.',
+        impactAnalysisPlan: 'Measure weekly active scheduling actions per account, Calendar support ticket volume, and feature adoption funnel depth. Baseline in Q1, target 25% improvement in scheduling task completion by Q3. Track CSAT delta for Calendar-heavy accounts quarterly.',
+        optionalAdditionalExecutionNotes: 'Require PM-led enablement sessions before each major release. Assign a dedicated CSM to the top 50 Calendar accounts for live feedback capture. Trigger: if Q2 NPS drops on Calendar, pause new feature work and run a 6-week stability sprint.',
+      },
+    },
+    {
+      id: 'sm_2',
+      strategyName: 'Selective Calendar investment for enterprise only',
+      investmentPosture: 'selective investment',
+      outcomeServed: 'Maximize Calendar ROI by focusing on the highest-value segment',
+      whatThisMeans: 'Invest Calendar development only where deal size or retention risk justifies it. Enterprise accounts get feature-complete scheduling; SMB gets maintenance-mode parity. Deprioritize Calendar for sub-500-employee accounts.',
+      evidenceSupporting: 'Enterprise accounts drive 70% of Calendar-related escalations and retention risk. Paylocity margin is 18 percentage points higher in the enterprise tier.',
+      evidenceAgainst: 'SMB is the fastest-growing segment. A perceived feature gap between tiers risks brand perception as a two-class product.',
+      conditionsForChoosing: 'Segmentation data confirms SMB customers use fewer than 3 of 12 Calendar features and that churn is not scheduling-driven in the SMB tier.',
+      tradeoffs: 'Cedes scheduling leadership in SMB to competitors investing there. Creates internal tension between SMB and enterprise product tracks.',
+      nextValidationStep: 'Pull Calendar feature utilization by company size band. If SMB uses fewer than 3 features on average, selective investment is justified.',
+      stage4ArtifactUse: 'Segmentation brief for VP Product to justify tiered roadmap investment and align SMB sales expectations.',
+      executionPlan: {
+        projectManagementPlan: 'Split Calendar backlog into Enterprise (active sprint) and SMB (maintenance queue) tracks. Enterprise PM owns the feature roadmap; SMB PM owns bug and parity work. Quarterly enterprise steering committee. SMB changes require VP approval before development begins.',
+        engineeringPlan: 'Feature-flag architecture to gate enterprise-only scheduling capabilities. Shared core data model, divergent UI layer. Build an entitlement service to manage feature access by account tier. Risk: entitlement complexity increases QA surface by an estimated 30%.',
+        impactAnalysisPlan: 'Track enterprise Calendar NPS monthly and SMB Calendar ticket volume quarterly. Success criteria: enterprise CSAT on scheduling at or above 4.4, SMB Calendar support tickets flat or declining. Revenue metric: enterprise Calendar-attributed retention rate versus prior-year cohort.',
+      },
+    },
+    {
+      id: 'sm_3',
+      strategyName: 'Maintain current Calendar trajectory',
+      investmentPosture: 'maintain',
+      outcomeServed: 'Preserve scheduling capability without over-indexing on unproven bets',
+      whatThisMeans: 'Continue the current Calendar roadmap at current headcount with no major architecture changes. Ship planned features on existing cadence and monitor competition without reacting prematurely to market signals.',
+      evidenceSupporting: 'Calendar adoption is stable. No major competitive displacement threat is confirmed. Current release cadence satisfies committed enterprise roadmap items.',
+      evidenceAgainst: 'Workday and Rippling are investing heavily in scheduling. Maintaining current pace may mean falling behind within 12 to 18 months.',
+      conditionsForChoosing: 'Competitive intelligence shows no imminent scheduling feature releases from the top 3 competitors in the next two quarters.',
+      tradeoffs: 'Risk of being caught flat-footed if competition accelerates. Opportunity cost of not leading the scheduling layer.',
+      nextValidationStep: 'Conduct a competitive feature audit of Workday, Rippling, and ADP scheduling modules and publish findings to product leadership within 30 days.',
+      stage4ArtifactUse: 'Status brief for the exec team covering current state, competitive context, and defined triggers for investment escalation.',
+      executionPlan: {
+        projectManagementPlan: 'Maintain current 2-week sprint cadence with existing Calendar squad. Quarterly roadmap review against committed items. Add a monthly competitive monitoring checkpoint. No headcount change. Trigger: if two consecutive quarterly reviews show scheduling win-rate decline, escalate to CPO.',
+        engineeringPlan: 'No architectural changes. Continue shipping from the existing Calendar backlog. Add automated regression coverage for core scheduling flows to reduce QA debt. Monitor third-party scheduling API usage in the customer base to detect workarounds signaling unmet needs.',
+        impactAnalysisPlan: 'Quarterly dashboard: scheduling task completion rate, Calendar CSAT, support volume, and feature adoption breadth. Compare against the same quarter prior year. Flag any metric that moves more than 10% unfavorably — triggers an executive review meeting.',
+      },
+    },
+    {
+      id: 'sm_4',
+      strategyName: 'Deprioritize Calendar, redirect to core HCM',
+      investmentPosture: 'deprioritize',
+      outcomeServed: 'Reallocate capacity to higher-ROI HCM modules with stronger moats',
+      whatThisMeans: 'Reduce the Calendar team to a 2-person maintenance crew and redirect engineering capacity to Benefits, Talent, and Payroll modules where differentiation is clearer and competitive switching costs are higher.',
+      evidenceSupporting: 'Paylocity highest NPS scores correlate with Payroll and Benefits accuracy, not scheduling. Core HCM is where switching costs are highest and churn attribution to Calendar is low.',
+      evidenceAgainst: 'Calendar is a high-frequency touchpoint. Deprioritization risks visibility loss in daily workflow, reducing platform stickiness over time.',
+      conditionsForChoosing: 'Retention cohort analysis confirms Calendar has no independent contribution to customer lifetime value beyond what Payroll and Benefits already provide.',
+      tradeoffs: 'Loss of scheduling workflow leadership. Risk that customers adopt point solutions like Calendly that reduce Paylocity platform share-of-workflow.',
+      nextValidationStep: 'Run retention cohort analysis: do customers with high Calendar engagement churn less than those without? If no significant difference, deprioritization is safe.',
+      stage4ArtifactUse: 'Rationale document for product and finance leadership justifying resource reallocation and setting Calendar to maintenance mode.',
+      executionPlan: {
+        projectManagementPlan: 'Wind down the Calendar sprint track over 60 days. Transition open stories to the backlog or cancel them. Assign 2 engineers to a maintenance rotation shared with the Payroll team. Monthly bug triage replaces the weekly Calendar standup. Document all open feature requests for a potential future restart.',
+        engineeringPlan: 'Freeze the Calendar API surface — no new endpoints, no architectural changes. Set up automated monitoring to catch regressions. Document Calendar internals for future team re-onboarding. Evaluate whether the Calendar data model should be consolidated into the core HCM schema.',
+        impactAnalysisPlan: 'Monitor Calendar support tickets, CSAT, and churn-flag frequency monthly during wind-down. If any metric exceeds 1.5x baseline over 90 days, trigger a re-evaluation meeting. Track whether customers are adopting Calendly — a leading indicator of unmet scheduling need.',
+      },
+    },
+    {
+      id: 'sm_5',
+      strategyName: 'Partner with a scheduling specialist, sunset native Calendar',
+      investmentPosture: 'divest/reallocate',
+      outcomeServed: 'Deliver best-in-class scheduling via OEM partnership without internal R&D cost',
+      whatThisMeans: 'Wind down native Calendar and replace it with a deep integration with a scheduling specialist. Paylocity provides the HR data layer; the partner provides the scheduling UX. Exit scheduling UI ownership while preserving the workflow.',
+      evidenceSupporting: 'Scheduling specialists invest 100% of R&D in this category. Calendar UI complexity is a top support driver. OEM integration partnerships are increasingly common in mid-market HCM.',
+      evidenceAgainst: 'Calendar is embedded in Paylocity workflows. Migration risk for existing users is high. OEM deals carry margin compression and long-term dependency on a third-party roadmap.',
+      conditionsForChoosing: 'A scheduling partner achieves 4.5 or higher CSAT with Paylocity customer profile in a 90-day pilot, and the migration path is automatable.',
+      tradeoffs: 'Loss of scheduling data ownership. Customer UX disruption during migration. Long-term dependency on partner roadmap decisions.',
+      nextValidationStep: 'Run a 90-day pilot offering 50 enterprise accounts a Calendly deep integration alongside native Calendar. Measure adoption, CSAT, and support volume.',
+      stage4ArtifactUse: 'Partnership evaluation brief for CPO and CFO: build vs partner analysis, pilot results framework, and go/no-go criteria.',
+      executionPlan: {
+        projectManagementPlan: '90-day partnership pilot in 3 phases: integration build in 30 days, controlled rollout to 50 accounts in 30 days, evaluation and decision in 30 days. PM owns pilot governance. CPO decision gate at day 90. Full migration plan must be ready before the go/no-go decision.',
+        engineeringPlan: 'Build HR data sync API between Paylocity and partner scheduling platform. Scope: employee availability, PTO sync, and org hierarchy. Evaluate partner API maturity before committing. Risk: Paylocity HR data compliance requirements may restrict what can be shared via OAuth integration.',
+        impactAnalysisPlan: 'Pilot metrics: scheduling task completion rate, Calendar CSAT, support ticket volume, and pilot account churn rate. Compare pilot cohort against a matched control group. Decision threshold: pilot CSAT at or above 4.3 and support tickets at or below baseline.',
+      },
+    },
+    {
+      id: 'sm_6',
+      strategyName: 'Build scheduling as an API platform for ISV partners',
+      investmentPosture: 'selective investment',
+      outcomeServed: 'Monetize Paylocity scheduling data as an HR workflow platform',
+      whatThisMeans: 'Invest in exposing Calendar as a scheduling API that ISV partners and enterprise integrators can build on. Shift from internal product to scheduling-data-as-a-service and create a developer ecosystem around HR scheduling data.',
+      evidenceSupporting: 'Paylocity holds rich employee availability, shift, and PTO data that standalone scheduling tools lack. Enterprise customers request integrations with Jira and Asana that depend on employee capacity data.',
+      evidenceAgainst: 'Paylocity has no API developer ecosystem today. Building one requires new infrastructure, documentation, and developer relations capabilities not currently present.',
+      conditionsForChoosing: 'Three or more enterprise customers independently request scheduling API access within a single quarter, signaling real demand before significant investment.',
+      tradeoffs: 'High upfront platform investment with uncertain demand. Requires new go-to-market capability including developer relations and ISV partnerships.',
+      nextValidationStep: 'Survey the top 25 enterprise accounts: would your team build or buy a scheduling integration if Paylocity offered an API? Quantify willingness-to-pay.',
+      stage4ArtifactUse: 'Platform strategy brief for CPO and CTO: API ecosystem investment thesis, demand signal analysis, build roadmap, and ISV partnership criteria.',
+      executionPlan: {
+        projectManagementPlan: 'Phase 1 Q1: API design and internal beta with 5 design-partner accounts. Phase 2 Q2: ISV pilot with 3 partners. Phase 3 Q3: GA with developer portal. PM and partnerships lead co-own. Monthly executive steering with CPO and CTO throughout.',
+        engineeringPlan: 'Build OAuth 2.0 gateway on the existing Paylocity auth layer. Design RESTful scheduling API with employee availability, shift, and PTO endpoints. Include rate limiting, versioning, and sandbox environment. Buy API gateway infrastructure, build domain logic in-house.',
+        impactAnalysisPlan: 'Track API registrations, calls per month, integration partner count, enterprise accounts with active integrations, and ARR from API-tier accounts. Target 10 ISV integrations and 100 enterprise API-active accounts by end of year 1.',
+        optionalAdditionalExecutionNotes: 'Risk: if API adoption is below 50 enterprise accounts by Q3, re-evaluate the platform thesis. Prepare a pivot plan to productize the API as an internal-only data layer powering future Paylocity modules rather than an external developer platform.',
+      },
+    },
+    {
+      id: 'sm_7',
+      strategyName: 'Consolidate Calendar into a Workforce Management suite',
+      investmentPosture: 'maintain',
+      outcomeServed: 'Eliminate module fragmentation and increase cross-sell through unified WFM',
+      whatThisMeans: 'Merge Calendar into a broader Workforce Management module alongside time tracking, shift management, and labor forecasting. Sell as a unified WFM suite with premium pricing rather than a standalone scheduling tool.',
+      evidenceSupporting: 'Customers who use Calendar also request time tracking integration most frequently. WFM suite positioning commands a 20 to 30% pricing premium. Workday and UKG sell WFM as a unified bundle.',
+      evidenceAgainst: 'Module consolidation is an 18 to 24 month engineering undertaking. Risk of disrupting existing Calendar customers during migration.',
+      conditionsForChoosing: 'Product analytics shows Calendar and Time Tracking are co-activated in more than 60% of accounts, signaling customers already view them as a pair.',
+      tradeoffs: 'Long timeline to value. Increases coordination complexity. May confuse existing Calendar-only buyers who do not need full WFM.',
+      nextValidationStep: 'Analyze module co-activation rates. If Calendar plus Time Tracking co-activation exceeds 60%, consolidation thesis is supported.',
+      stage4ArtifactUse: 'Product consolidation brief for CPO: WFM module architecture, customer migration plan, pricing model, and competitive positioning versus Workday WFM.',
+      executionPlan: {
+        projectManagementPlan: '18-month program in 3 phases: design and architecture 6 months, build and internal testing 9 months, GA and customer migration 3 months. Dedicated squad of 10 engineers. Monthly steering committee with CPO, CTO, and Head of Sales throughout all phases.',
+        engineeringPlan: 'Build a unified WFM data model merging Calendar, Time Tracking, and Shift entities into a single API surface. Maintain backwards compatibility for Calendar-only customers during a 12-month migration window. Full feature parity gate required before GA.',
+        impactAnalysisPlan: 'Milestone metrics: unified module CSAT at GA, cross-sell rate from Calendar to full WFM suite, average contract value uplift, and time-to-full-WFM-adoption for migrated accounts. Target 30% of Calendar-only accounts upgrading within 12 months of GA.',
+      },
+    },
+    {
+      id: 'sm_8',
+      strategyName: 'Use Calendar as a compliance moat for at-risk accounts',
+      investmentPosture: 'selective investment',
+      outcomeServed: 'Retain at-risk enterprise accounts by leading with scheduling stickiness',
+      whatThisMeans: 'Invest in Calendar features that are difficult to replicate quickly — compliance-aware scheduling, union rule integration, and advanced availability matching. Position as a retention moat for complex accounts rather than a growth driver for new ones.',
+      evidenceSupporting: 'Enterprise accounts with complex scheduling requirements show 40% lower churn than standard accounts. This complexity is difficult for newer HCM competitors to replicate without deep HR data integration.',
+      evidenceAgainst: 'Compliance-aware scheduling is a niche within the overall Calendar user base. Investment at scale serves a minority of accounts and may not justify ROI if churn rates do not improve measurably.',
+      conditionsForChoosing: 'At-risk enterprise account analysis shows scheduling complexity is a top retention lever for more than 12 of the top 20 accounts most likely to churn.',
+      tradeoffs: 'Serving a minority use case with disproportionate investment. Benefit is concentrated in accounts already in the contract pipeline — limited new customer acquisition upside.',
+      nextValidationStep: 'Pull the top 20 at-risk enterprise accounts. How many have complex scheduling requirements? If more than 12, moat defense investment is justified.',
+      stage4ArtifactUse: 'Retention strategy brief for Head of Customer Success: accounts to target, Calendar moat features, and CSM playbook for renewal conversations.',
+      executionPlan: {
+        projectManagementPlan: 'Identify the top 30 at-risk enterprise accounts with complex scheduling needs. Assign dedicated CSM and PM to each. 90-day retention sprint delivering 2 moat features per quarter. Governance: monthly churn review with CS leadership. Gate: if 5 accounts renew citing Calendar improvements, expand the program.',
+        engineeringPlan: 'Build a configurable rule engine for union scheduling agreements covering shift differentials, mandatory rest periods, and seniority-based assignment. Evaluate open-source rule engine versus custom build. Risk: rule complexity exponentially increases QA surface — plan for a dedicated compliance QA resource.',
+        impactAnalysisPlan: 'Track renewal rate for targeted accounts versus a matched control, Calendar moat feature activation by account, and compliance scheduling support escalations. Target 80% renewal rate in targeted cohort versus 65% baseline. Measurement cadence: monthly during sprint, quarterly thereafter.',
+        optionalAdditionalExecutionNotes: 'Train CS team on the compliance scheduling value proposition before account outreach begins. Prepare a comparison leave-behind showing Paylocity versus competitor compliance scheduling capability. Risk: if legal review of union scheduling rules extends the timeline, delay feature GA rather than ship with incomplete compliance coverage.',
+      },
+    },
+    {
+      id: 'sm_9',
+      strategyName: 'Position Calendar as AI-first scheduling differentiator',
+      investmentPosture: 'selective investment',
+      outcomeServed: 'Establish AI scheduling leadership before competitors in mid-market HCM',
+      whatThisMeans: 'Invest in AI-powered scheduling features: auto-optimize shift coverage, predict scheduling conflicts before they occur, and recommend patterns based on historical workforce data. Position Paylocity as the intelligent scheduling layer in HCM.',
+      evidenceSupporting: 'Paylocity holds multi-year historical scheduling data competitors lack. AI scheduling is on Workday 2025 roadmap — moving now creates a 12 to 18 month timing advantage.',
+      evidenceAgainst: 'AI scheduling requires data quality investment before model training. Paylocity current Calendar data model may not be structured for ML consumption. Customer trust in AI HR decisions is still developing.',
+      conditionsForChoosing: 'A technical assessment confirms Paylocity scheduling data has sufficient quality and volume to train a predictive model within 6 months.',
+      tradeoffs: 'High R&D investment with 12 to 18 month horizon to customer-visible value. Risk of shipping AI features before customer trust is established in this domain.',
+      nextValidationStep: 'Commission a 30-day data quality audit of Calendar historical data covering completeness, schema consistency, and volume by account tier.',
+      stage4ArtifactUse: 'AI roadmap investment brief for CPO and Head of Data: model approach, data requirements, timeline to production, and competitive timing rationale.',
+      executionPlan: {
+        projectManagementPlan: 'Phase 1: 30-day data audit with current team. Phase 2: AI scheduling pilot with a 3-person ML team and 3 design-partner enterprise accounts over 90 days. Phase 3: GA with configurable opt-in AI recommendations. CPO decision gate at end of Phase 2 before Phase 3 commitment.',
+        engineeringPlan: 'Build a scheduling data pipeline to an ML feature store. Train a gradient-boosted model for shift coverage prediction. Serve recommendations via the existing Calendar API. Build an explainability layer — HR admins must see why the AI recommended each scheduling pattern before accepting it.',
+        impactAnalysisPlan: 'Pilot metrics: scheduling conflict reduction rate, time-to-schedule for AI-assisted versus manual, and admin acceptance rate of AI recommendations. Target 20% reduction in scheduling conflicts and 30% faster scheduling task completion in pilot accounts within 90 days.',
+        optionalAdditionalExecutionNotes: 'Run structured customer education before enabling AI features. Provide a confidence score on every AI recommendation and an explain-this-recommendation feature at GA. Risk: if acceptance rate falls below 50% at end of pilot, pause expansion and run qualitative research before proceeding.',
+      },
+    },
+    {
+      id: 'sm_10',
+      strategyName: 'Exit scheduling, reposition as HR analytics platform',
+      investmentPosture: 'divest/reallocate',
+      outcomeServed: 'Reposition Paylocity from scheduling tool to workforce intelligence platform',
+      whatThisMeans: 'Sunset Calendar over 24 months. Redirect all scheduling engineering capacity to an HR analytics layer that aggregates scheduling, workforce, and payroll data into executive dashboards. Compete on intelligence, not scheduling mechanics.',
+      evidenceSupporting: 'HR analytics is a high-growth market. Paylocity data assets spanning payroll, scheduling, and talent are uniquely positioned to power cross-functional workforce intelligence that point scheduling tools cannot match.',
+      evidenceAgainst: '24-month platform pivot carries high execution risk. Calendar sunset risks near-term retention. Analytics market has established players in Visier, Workday Prism, and Tableau.',
+      conditionsForChoosing: 'Market analysis confirms Paylocity can achieve a credible top-5 position in mid-market HR analytics within 36 months and customer research confirms demand for unified workforce intelligence.',
+      tradeoffs: 'Maximum short-term disruption and customer communication burden. Long payback period before analytics revenue materializes. Requires managing Calendar sunset carefully across the customer base.',
+      nextValidationStep: 'Commission a 60-day HR analytics market sizing and competitive positioning study — assess Paylocity data asset advantage versus Visier, Workday Prism, and Tableau.',
+      stage4ArtifactUse: 'Strategic pivot brief for CEO, CPO, and Board: platform repositioning rationale, data asset value analysis, 36-month transformation roadmap, and investment case.',
+      executionPlan: {
+        projectManagementPlan: '24-month phased exit: Year 1 — build analytics platform core while maintaining Calendar. Year 2 — GA analytics platform, begin Calendar sunset communications. Year 3 — Calendar EOL, full analytics market launch. Quarterly program steering committee with CEO, CPO, and CFO.',
+        engineeringPlan: 'Build a unified workforce data warehouse aggregating payroll, scheduling, and talent data. API layer for self-serve analytics. Evaluate embedded BI tooling for the Paylocity UI. Calendar codebase maintained by a 2-person team during the 24-month wind-down with no new features added.',
+        impactAnalysisPlan: 'Year 1: analytics pilot with 10 design-partner accounts — track executive dashboard adoption and insights actioned per month. Year 2: GA metrics — accounts on platform, ARR uplift per analytics account. Year 3: full cohort retention rate versus pre-pivot baseline.',
+        optionalAdditionalExecutionNotes: 'Calendar sunset plan: 18-month advance notice to all Calendar accounts, dedicated migration support team, and data export tools available at announcement. Risk: if Year 1 pilot adoption is below 50% of design partners, re-evaluate sunset timeline and consider keeping Calendar as a legacy offering on maintenance-only support.',
+      },
+    },
+  ],
+}
+
+// ─── Mock data — Stage 4 Artifact ────────────────────────────────────────────
+
+export const MOCK_STAGE4_ARTIFACT = {
+  artifactTitle: 'Calendar Platform: The Case for Accelerated Investment',
+  subtitle: 'Double-down strategy — Chief Product Officer decision brief',
+  personaSummary: 'CPO reviewing roadmap allocation for the HCM scheduling module',
+  sections: [
+    {
+      heading: 'Strategic Context',
+      body: "Paylocity's Calendar module sits at the highest-frequency touchpoint in the HCM workflow — scheduling decisions happen daily where payroll decisions happen monthly. This frequency advantage creates an asymmetric opportunity: a scheduling layer embedded in daily operations generates switching costs that HR core modules, despite their contractual stickiness, cannot match on their own. The question is not whether to invest in scheduling, but whether the current investment rate is sufficient to defend against a converging competitive field.",
+    },
+    {
+      heading: 'Evidence Basis',
+      body: 'Calendar adoption among enterprise accounts reaches 65% of the installed base, with the highest-engagement cohorts showing measurably lower churn than the Paylocity average. Win-loss patterns indicate scheduling capability is an active factor in competitive deals involving Workday and Rippling. However, the same evidence reveals a gap: Calendar UI complexity is a top-3 support driver, indicating that current adoption reflects need — not satisfaction. There is room to convert functional adoption into loyalty-generating satisfaction before competitors close the feature gap.',
+    },
+    {
+      heading: 'Investment Rationale',
+      body: "A double-down posture is justified on three grounds. First, the data asset advantage: Paylocity holds multi-year scheduling history that new entrants cannot synthesize quickly, creating a defensible AI scheduling foundation if developed now. Second, the timing window: Workday's 2025 roadmap signals scheduling intelligence investment, establishing an 18-month window before competitive parity arrives. Third, the moat economics: union rule scheduling and compliance-aware scheduling are areas where Paylocity's enterprise customer relationships create requirements that generic scheduling tools cannot serve without deep HCM integration.",
+    },
+    {
+      heading: 'Execution Approach',
+      body: 'The recommended execution follows three phases. Phase 1 — Q1 to Q2: stabilize the existing Calendar experience, targeting a 30% reduction in support ticket volume and improved scheduling task completion rates. No net-new features until the foundation is reliable. Phase 2 — Q3: ship scheduling automation v2, including availability matching, conflict detection, and configurable compliance scheduling rules. Phase 3 — Q4 and beyond: launch an AI scheduling pilot with three to five design-partner enterprise accounts using historical data to power predictive scheduling recommendations. Each phase has a defined go/no-go gate before the next begins.',
+    },
+    {
+      heading: 'Risks and Mitigations',
+      body: 'The primary risk is over-engineering for enterprise while eroding SMB experience. Mitigation: feature-flag architecture keeps enterprise-only features invisible to SMB accounts. The secondary risk is change fatigue — rapid release cycles have already surfaced in customer feedback. Mitigation: a Change Advisory Board gates major Calendar releases and requires CSM-led enablement for enterprise accounts before rollout. A third risk is competitive timing: if Workday ships AI scheduling before Phase 3, the timing advantage is lost. Mitigation: a Q1 data quality audit is a hard prerequisite — if Paylocity scheduling data cannot support ML within six months, redirect the budget to stability and compliance features where the advantage is already established.',
+    },
+  ],
+  keyDecisions: [
+    'Allocate a dedicated Calendar squad of 6 engineers for a minimum of 12 months',
+    'Establish a Change Advisory Board before the next major Calendar release',
+    'Authorize a 30-day scheduling data quality audit to gate the AI investment decision',
+  ],
+  callToAction: 'Approve the Q1 Calendar squad allocation and schedule the data quality audit with the data engineering team within the next two weeks. The audit result gates the AI investment — without it, the Phase 3 timeline is speculative.',
+  validationCheckpoints: [
+    'Q1: Calendar support ticket volume down 30% versus baseline',
+    'Q2: Scheduling task completion rate improved 25% in enterprise cohort',
+    'Q3: AI scheduling pilot launched with 3 design-partner accounts',
+  ],
+  readinessWarnings: [
+    'If data quality audit reveals model-training gaps, defer AI timeline by 6 months',
+    'If Q2 Calendar NPS drops despite investment, pause features and run stability sprint',
+    'If enterprise win-rate analysis does not confirm Calendar as a deal factor, shift to selective investment posture',
+  ],
+}
