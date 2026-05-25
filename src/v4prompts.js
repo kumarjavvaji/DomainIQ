@@ -2379,3 +2379,124 @@ export const MOCK_STAGE4_ARTIFACT = {
     'If enterprise win-rate analysis does not confirm Calendar as a deal factor, shift to selective investment posture',
   ],
 }
+
+// ─── Stage 4 Artifact Refinement ─────────────────────────────────────────────
+// Revises an existing Stage 4 artifact based on user-supplied context.
+// Returns the same schema as buildStage4ArtifactPrompt plus changeSummary.
+// Budget: 4000 tokens.
+
+export function buildStage4ArtifactRefinementPrompt({
+  entity,
+  currentVersionData,
+  selectedStrategy,
+  persona,
+  refinementContext,
+  versionNumber,
+}) {
+  const strat = selectedStrategy || {}
+  const pers = persona || {}
+  const sideLabel = pers.side === 'customer' ? 'buyer/user perspective' : 'vendor/operator perspective'
+
+  const currentSections = (currentVersionData?.sections || [])
+    .map(s => `  [${s.heading}]\n  ${s.body}`)
+    .join('\n\n') || '  (none)'
+
+  return `You are revising a one-page decision-basis artifact for ${entity?.name || 'the subject entity'}.
+
+ARTIFACT BEING REVISED: Version ${versionNumber || 1}
+
+PERSONA / AUDIENCE:
+  Side: ${pers.side || 'provider'} (${sideLabel})
+  Role: ${pers.role || 'not specified'}
+  Tone emphasis: ${(pers.toneEmphasis || []).join(', ') || 'balanced'}
+
+SOURCE STRATEGY: "${strat.strategyName}"
+  Investment posture: ${strat.investmentPosture}
+  Outcome served: ${strat.outcomeServed}
+  Evidence supporting: ${strat.evidenceSupporting}
+  Evidence against: ${strat.evidenceAgainst}
+  Tradeoffs: ${strat.tradeoffs}
+
+CURRENT ARTIFACT TITLE: ${currentVersionData?.artifactTitle || 'Not available'}
+
+CURRENT SECTIONS:
+${currentSections}
+
+CURRENT CALL TO ACTION:
+${currentVersionData?.callToAction || '(none)'}
+
+USER-SUPPLIED REFINEMENT CONTEXT:
+${refinementContext || '(none provided)'}
+
+REVISION RULES:
+- Incorporate the refinement context wherever it materially changes the reasoning or recommendations
+- Do not invent metrics or evidence not present in the context or source strategy
+- Preserve strong reasoning from the current version that the context does not contradict
+- The changeSummary must be concise (≤60 words): explain what changed and why
+- Maintain the same persona framing and tone as the current version
+
+Return ONLY valid JSON, no markdown, no backticks:
+
+{
+  "artifactTitle": "≤10 words — update only if context changes the strategic framing",
+  "subtitle": "≤15 words",
+  "personaSummary": "≤20 words",
+  "sections": [
+    { "heading": "Section heading", "body": "80–140 words per section. Revise sections affected by the new context; preserve others. Minimum 4 sections." }
+  ],
+  "keyDecisions": ["≤15 words each — 2 to 3 items"],
+  "callToAction": "≤40 words",
+  "validationCheckpoints": ["≤15 words each — 2 to 3 items"],
+  "readinessWarnings": ["≤20 words each — 1 to 3 items"],
+  "changeSummary": "≤60 words explaining what changed and why"
+}`
+}
+
+// ─── Mock data — Stage 4 Artifact Refined ────────────────────────────────────
+// Represents a v2 refinement of MOCK_STAGE4_ARTIFACT incorporating a budget
+// constraint (4-engineer squad cap) and CHRO's compliance scheduling concern.
+
+export const MOCK_STAGE4_ARTIFACT_REFINED = {
+  artifactTitle: 'Calendar Platform: Constrained Investment Case',
+  subtitle: 'Double-down strategy revised for budget and compliance context — CPO',
+  personaSummary: 'CPO reviewing revised roadmap under budget and renewal-risk constraints',
+  sections: [
+    {
+      heading: 'Strategic Context',
+      body: "Paylocity's Calendar module operates at the highest-frequency HCM touchpoint — scheduling decisions happen daily where payroll decisions happen monthly. A revised investment case must account for two material constraints surfaced since the initial brief: the Calendar squad is capped at 4 engineers rather than 6, and the CHRO has flagged compliance scheduling for the top three union enterprise accounts as the primary renewal risk this quarter. These constraints sharpen the investment thesis by forcing prioritization — stability and compliance take precedence over new feature breadth.",
+    },
+    {
+      heading: 'Evidence Basis',
+      body: "The core evidence remains intact: 65% enterprise adoption, scheduling as the highest-frequency HCM touchpoint, and win-loss signals confirming Calendar as a deal factor in competitive situations. The new context adds a sharper signal: the CHRO's identification of union scheduling compliance as a retention lever is supported by the prior finding that compliance-sensitive accounts show 40% lower churn. This correlation now has a direct operational counterpart — three named accounts at renewal risk where compliance scheduling is the stated concern. The evidence basis is narrower but more actionable.",
+    },
+    {
+      heading: 'Revised Investment Rationale',
+      body: "A double-down posture remains justified, but the execution must operate within a 4-engineer constraint. This changes the investment from broad platform acceleration to a focused two-track execution: first, stabilize the Calendar experience to reduce support volume; second, prioritize compliance scheduling features that directly address the CHRO's retention concern for at-risk union accounts. This sequencing converts a broad platform bet into a targeted retention and differentiation investment with a measurable near-term outcome — preserving the three accounts at renewal risk while building the compliance moat that competitors cannot easily replicate.",
+    },
+    {
+      heading: 'Revised Execution Approach',
+      body: 'Phase 1 — Q1 (stabilization, 4 engineers): focus entirely on reducing Calendar support ticket volume and completing compliance scheduling rule configuration for the three at-risk union accounts. No new features. Deliver a compliance scheduling runbook to CSM team by end of Q1. Phase 2 — Q2 (availability matching and conflict detection with 4-engineer capacity): scope is reduced from the original plan but maintains the core scheduling automation milestone. Phase 3 — Q4 (AI scheduling pilot): conditional on the Q1 data quality audit confirming readiness; if not confirmed, redirect Phase 3 capacity to additional compliance accounts. All phases require CPO approval to advance.',
+    },
+    {
+      heading: 'Risks and Mitigations',
+      body: "The 4-engineer constraint introduces a sequencing risk: slower feature delivery creates a window for Workday to close the gap if they ship AI scheduling before Paylocity's Phase 3. Mitigation: the compliance scheduling moat is not replicable quickly — invest there first. Stakeholder alignment is a second risk. The CHRO's direct involvement in flagging compliance concerns means CS and Product must align on communication before any public roadmap updates. Mitigation: schedule a pre-announcement briefing with the CHRO and the three at-risk account teams before the Q1 stabilization sprint begins. Change fatigue risk from prior rapid releases remains — the Change Advisory Board gate is essential.",
+    },
+  ],
+  keyDecisions: [
+    'Confirm 4-engineer Calendar squad allocation for 12 months minimum',
+    'Prioritize compliance scheduling for three named at-risk union accounts in Q1',
+    'Schedule CHRO pre-briefing before Q1 sprint kickoff',
+  ],
+  callToAction: 'Approve the revised 4-engineer Calendar squad allocation, schedule the CHRO pre-briefing within one week, and assign the compliance scheduling runbook task to the CSM lead before the Q1 sprint begins.',
+  validationCheckpoints: [
+    'Q1: Compliance scheduling configured for all 3 at-risk accounts before renewal dates',
+    'Q1: Calendar support ticket volume down 30% versus baseline',
+    'Q2: Scheduling task completion rate improved 20% in enterprise cohort under 4-engineer constraint',
+  ],
+  readinessWarnings: [
+    'If 4-engineer constraint cannot be maintained for 12 months, re-scope Phase 2 before committing',
+    'If CHRO identifies additional at-risk accounts before Q1, escalate squad allocation request',
+    'If data quality audit reveals AI model-training gaps, redirect Phase 3 budget to compliance coverage',
+  ],
+  changeSummary: 'Revised to incorporate a 4-engineer squad constraint and the CHRO\'s compliance scheduling concern for three at-risk union accounts. Updated execution approach, risks, and call to action to reflect these constraints. The strategic posture remains double-down but is now sequenced around retention-critical compliance work first.',
+}

@@ -25,6 +25,8 @@ import {
   MOCK_V4_STAGE3,
   MOCK_STRATEGY_MENU,
   MOCK_STAGE4_ARTIFACT,
+  buildStage4ArtifactRefinementPrompt,
+  MOCK_STAGE4_ARTIFACT_REFINED,
 } from '../v4prompts'
 import {
   getDirectDeps,
@@ -721,12 +723,26 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         const raw = await callClaude(prompt, 4000)
         artifactData = JSON.parse(raw)
       }
+      const v1 = {
+        id:               artifactId + '_v1',
+        versionNumber:    1,
+        createdAt:        Date.now(),
+        refinementContext: null,
+        changeSummary:    null,
+        data:             artifactData,
+      }
       setSession(prev => ({
         ...prev,
         stage4: {
           ...prev.stage4,
           artifacts: (prev.stage4?.artifacts || []).map(a =>
-            a.id !== artifactId ? a : { ...a, status: 'complete', data: artifactData }
+            a.id !== artifactId ? a : {
+              ...a,
+              status:          'complete',
+              data:            artifactData,
+              versions:        [v1],
+              activeVersionId: v1.id,
+            }
           ),
         },
       }))
@@ -737,6 +753,100 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           ...prev.stage4,
           artifacts: (prev.stage4?.artifacts || []).map(a =>
             a.id !== artifactId ? a : { ...a, status: 'error', errorMessage: e.message }
+          ),
+        },
+      }))
+    }
+  }
+
+  // ── Stage 4 artifact refinement ───────────────────────────────────────────────
+  // Revises an existing artifact with added user context. Preserves the prior
+  // version and appends a new version; sets activeVersionId to the new version.
+  async function handleRefineStage4Artifact({ artifactId, refinementContext }) {
+    const artifact = session.stage4?.artifacts?.find(a => a.id === artifactId)
+    if (!artifact) return
+
+    // Build base versions — backward compat for artifacts without .versions
+    const baseVersions = artifact.versions?.length > 0
+      ? artifact.versions
+      : [{
+          id:               artifact.id + '_v1',
+          versionNumber:    1,
+          createdAt:        artifact.generatedAt || Date.now(),
+          refinementContext: null,
+          changeSummary:    null,
+          data:             artifact.data,
+        }]
+
+    const activeVersion = artifact.activeVersionId
+      ? baseVersions.find(v => v.id === artifact.activeVersionId)
+      : baseVersions[baseVersions.length - 1]
+
+    const sourceStrategy = (session.stage3?.strategyMenu || []).find(s => s.id === artifact.sourceStrategyId)
+      || { strategyName: artifact.sourceStrategyName, investmentPosture: artifact.strategyPosture }
+
+    // Mark refining — keeps existing content visible, shows "Refining…" in tab
+    setSession(prev => ({
+      ...prev,
+      stage4: {
+        ...prev.stage4,
+        artifacts: (prev.stage4?.artifacts || []).map(a =>
+          a.id !== artifactId ? a : { ...a, refineStatus: 'refining', refineError: null }
+        ),
+      },
+    }))
+
+    try {
+      let refinedData
+      if (!apiKeySet) {
+        await delay(2200)
+        refinedData = MOCK_STAGE4_ARTIFACT_REFINED
+      } else {
+        const prompt = buildStage4ArtifactRefinementPrompt({
+          entity:             session.entity,
+          currentVersionData: activeVersion?.data || artifact.data,
+          selectedStrategy:   sourceStrategy,
+          persona:            artifact.persona,
+          refinementContext,
+          versionNumber:      baseVersions.length,
+        })
+        const raw = await callClaude(prompt, 4000)
+        refinedData = JSON.parse(raw)
+      }
+
+      const newVersionId = artifactId + '_v' + (baseVersions.length + 1)
+      const newVersion = {
+        id:               newVersionId,
+        versionNumber:    baseVersions.length + 1,
+        createdAt:        Date.now(),
+        refinementContext,
+        changeSummary:    refinedData.changeSummary || '',
+        data:             refinedData,
+      }
+
+      setSession(prev => ({
+        ...prev,
+        stage4: {
+          ...prev.stage4,
+          artifacts: (prev.stage4?.artifacts || []).map(a =>
+            a.id !== artifactId ? a : {
+              ...a,
+              data:            refinedData,
+              versions:        [...baseVersions, newVersion],
+              activeVersionId: newVersionId,
+              refineStatus:    null,
+              refineError:     null,
+            }
+          ),
+        },
+      }))
+    } catch (e) {
+      setSession(prev => ({
+        ...prev,
+        stage4: {
+          ...prev.stage4,
+          artifacts: (prev.stage4?.artifacts || []).map(a =>
+            a.id !== artifactId ? a : { ...a, refineStatus: 'error', refineError: e.message }
           ),
         },
       }))
@@ -1153,6 +1263,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             stage4={session.stage4}
             onBackToStage3={() => setStep('stage3')}
             onGenerateArtifact={handleGenerateStage4Artifact}
+            onRefineArtifact={handleRefineStage4Artifact}
           />
         )}
       </div>
