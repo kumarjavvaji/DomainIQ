@@ -7,3 +7,6 @@ dist/
 .env.*.local
 .netlify/
 .vercel/
+
+# dev scratch / session continuation notes
+next-session-prompts.txt

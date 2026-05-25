@@ -1,11 +1,23 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import IntentCapture from './IntentCapture'
 import Stage1Panel from './Stage1Panel'
 import Stage2Panel from './Stage2Panel'
 import Stage2RerunReview from './Stage2RerunReview'
 import Stage3Panel from './Stage3Panel'
 import Stage4Panel from './Stage4Panel'
+import Stage5Panel from './Stage5Panel'
 import ChallengeModal from './ChallengeModal'
+import { buildStage4SignalsPrompt, MOCK_STAGE4_SIGNALS, generateFallbackSignals } from '../v4stage4signals'
+import { buildStage5Prompt, MOCK_STAGE5, COMPACT_GENERATION_LIMITS } from '../v4stage5'
+import {
+  captureSourceLearningSnapshot,
+  checkStage5Freshness,
+  generateStage1LearningSignals,
+  generateStage2LearningSignals,
+  generateStage3LearningSignals,
+  buildStage5ReconcilePrompt,
+  MOCK_STAGE5_UPDATE,
+} from './learningSignals'
 import {
   buildStage1Prompt,
   buildPressureTestPrompt,
@@ -50,6 +62,7 @@ import { callClaude, callClaudeWithSearch } from '../api'
 // step: 'intent' | 'generating' | 'inspect' | 'regenerating'
 //     | 'stage2_generating' | 'stage2' | 'stage2_candidate_review'
 //     | 'stage3_generating' | 'stage3' | 'stage4'
+//     | 'stage5_generating' | 'stage5'
 export default function SessionFlow({ sessionId, savedSession, globalPolicy, apiKeySet, onSave, onBack }) {
   const [step, setStep]           = useState(
     savedSession?.stage2RerunCandidate?.status === 'pending_review' ? 'stage2_candidate_review' :
@@ -64,6 +77,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   const [error, setError]         = useState(null)
   const [isUpdatingStrategyOptions, setIsUpdatingStrategyOptions] = useState(false)
   const [isGeneratingStrategyMenu, setIsGeneratingStrategyMenu]   = useState(false)
+  const [isGeneratingSignals,      setIsGeneratingSignals]        = useState(false)
+  const [isGeneratingStage5,       setIsGeneratingStage5]         = useState(false)
 
   // Persist whenever session changes
   useEffect(() => {
@@ -126,7 +141,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           policy: baseSession.generationPolicy,
         })
         const raw = await callClaude(prompt, 3500)
-        stage1Data = JSON.parse(raw)
+        stage1Data = parseJsonResponse(raw)
       }
 
       // Normalise nodes — ensure all required fields are present
@@ -560,7 +575,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         // Stage 3 has 9 output sections; rich sessions regularly reach 7–8k tokens.
         // 10 000 gives headroom without approaching model limits.
         const raw = await callClaude(prompt, 10000)
-        stage3Data = JSON.parse(raw)
+        stage3Data = parseJsonResponse(raw)
       }
 
       const stage3 = {
@@ -625,7 +640,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           currentStrategicOptions: session.stage3.strategicOptions || [],
         })
         const raw = await callClaude(prompt, 4000)
-        const parsed = JSON.parse(raw)
+        const parsed = parseJsonResponse(raw)
         updatedOptions = parsed.strategicOptions || []
       }
       setSession(prev => ({
@@ -664,7 +679,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           entity:           session.entity,
         })
         const raw = await callClaude(prompt, 8000)
-        menuData = JSON.parse(raw)
+        menuData = parseJsonResponse(raw)
       }
       setSession(prev => ({
         ...prev,
@@ -722,7 +737,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           persona,
         })
         const raw = await callClaude(prompt, 4000)
-        artifactData = JSON.parse(raw)
+        artifactData = parseJsonResponse(raw)
       }
       const v1 = {
         id:               artifactId + '_v1',
@@ -819,7 +834,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           versionNumber:      baseVersions.length,
         })
         const raw = await callClaude(prompt, 4000)
-        refinedData = JSON.parse(raw)
+        refinedData = parseJsonResponse(raw)
       }
 
       const newVersionId = artifactId + '_v' + (baseVersions.length + 1)
@@ -867,8 +882,19 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   // Selection reassignment within Stage4Panel is handled by local state there.
   function handleDeleteStage4Artifact({ artifactId }) {
     setSession(prev => {
+      const toDelete  = (prev.stage4?.artifacts || []).find(a => a.id === artifactId)
       const artifacts = (prev.stage4?.artifacts || []).filter(a => a.id !== artifactId)
       const currentActive = prev.stage4?.activeArtifactId
+      // Capture lightweight metadata so signal generation can produce negative_learning_signal entries
+      const deletionRecord = toDelete ? {
+        id:           toDelete.id,
+        title:        toDelete.sourceStrategyName || 'Unknown strategy',
+        persona:      toDelete.persona?.role || null,
+        posture:      toDelete.strategyPosture || null,
+        versionCount: (toDelete.versions || []).length,
+        deletedAt:    Date.now(),
+        deleteReason: null,
+      } : null
       return {
         ...prev,
         stage4: {
@@ -877,6 +903,10 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           activeArtifactId: currentActive === artifactId
             ? (artifacts[0]?.id || null)
             : currentActive,
+          deletedArtifactMetadata: [
+            ...(prev.stage4?.deletedArtifactMetadata || []),
+            ...(deletionRecord ? [deletionRecord] : []),
+          ],
         },
       }
     })
@@ -890,6 +920,230 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         ...prev,
         stage4: { ...prev.stage4, activeArtifactId: artifactId },
       }
+    })
+  }
+
+  // ── Stage 4 learning signals ──────────────────────────────────────────────────
+  async function handleGenerateStage4Signals() {
+    const completedArtifacts = (session.stage4?.artifacts || []).filter(a => a.status === 'complete')
+    if (completedArtifacts.length === 0) return
+    setIsGeneratingSignals(true)
+    const now = Date.now()
+    try {
+      let signals = []; let generationMode = 'api'
+      if (!apiKeySet) {
+        await delay(1600)
+        signals = enrichSignals(MOCK_STAGE4_SIGNALS.learningSignals || [], now)
+        generationMode = 'mock'
+      } else {
+        const prompt = buildStage4SignalsPrompt({ session })
+        if (!prompt) { setIsGeneratingSignals(false); return }
+        const raw    = await callClaude(prompt, 3000)
+        const parsed = safeParseSignals(raw)
+        if (parsed.ok && parsed.signals.length > 0) {
+          signals = enrichSignals(parsed.signals, now); generationMode = 'api'
+        } else {
+          const fallback = generateFallbackSignals(completedArtifacts, now)
+          if (fallback.length > 0) { signals = fallback; generationMode = 'fallback' }
+          else {
+            setSession(prev => ({ ...prev, stage4: { ...prev.stage4, signalsMeta: {
+              status: 'error', errorType: parsed.errorType,
+              errorMessage: getSignalErrorMessage(parsed.errorType),
+              failedAt: now, rawPreview: parsed.rawPreview, count: 0, generationMode: null, generatedAt: null,
+            }}}))
+            setIsGeneratingSignals(false); return
+          }
+        }
+      }
+      setSession(prev => ({ ...prev, stage4: { ...prev.stage4,
+        learningSignals: signals, signalsGeneratedAt: now,
+        signalsMeta: { status: 'current', generationMode, count: signals.length, generatedAt: now,
+          errorType: null, errorMessage: null, failedAt: null, rawPreview: null },
+      }}))
+    } catch (e) {
+      setSession(prev => ({ ...prev, stage4: { ...prev.stage4, signalsMeta: {
+        status: 'error', errorType: 'parse_error', errorMessage: `Generation failed: ${e.message}`,
+        failedAt: now, rawPreview: null, count: 0, generationMode: null, generatedAt: null,
+      }}}))
+    } finally { setIsGeneratingSignals(false) }
+  }
+
+  // ── Stage 5 generation ────────────────────────────────────────────────────────
+  async function handleGenerateStage5() {
+    setIsGeneratingStage5(true)
+    setStep('stage5_generating')
+    setError(null)
+    try {
+      let workingSession       = session
+      const completedArtifacts = (workingSession.stage4?.artifacts || []).filter(a => a.status === 'complete')
+      const existingSignals    = workingSession.stage4?.learningSignals || []
+      const signalsMeta        = workingSession.stage4?.signalsMeta
+      const hasValidSignals    = existingSignals.length > 0 && signalsMeta?.status !== 'error'
+      const shouldAutoGenerate = !hasValidSignals && signalsMeta?.status !== 'error' && completedArtifacts.length > 0
+
+      if (shouldAutoGenerate) {
+        const s4Now = Date.now(); let s4Signals = []; let s4Mode = 'api'
+        if (!apiKeySet) {
+          await delay(1200)
+          s4Signals = enrichSignals(MOCK_STAGE4_SIGNALS.learningSignals || [], s4Now); s4Mode = 'mock'
+        } else {
+          const prompt = buildStage4SignalsPrompt({ session: workingSession })
+          if (prompt) {
+            const raw    = await callClaude(prompt, 3000)
+            const parsed = safeParseSignals(raw)
+            if (parsed.ok && parsed.signals.length > 0) { s4Signals = enrichSignals(parsed.signals, s4Now); s4Mode = 'api' }
+            else {
+              const fallback = generateFallbackSignals(completedArtifacts, s4Now)
+              if (fallback.length > 0) { s4Signals = fallback; s4Mode = 'fallback' }
+            }
+          }
+        }
+        workingSession = { ...workingSession, stage4: { ...workingSession.stage4,
+          learningSignals: s4Signals, signalsGeneratedAt: s4Now,
+          signalsMeta: s4Signals.length > 0
+            ? { status: 'current', generationMode: s4Mode, count: s4Signals.length, generatedAt: s4Now, errorType: null, errorMessage: null, failedAt: null, rawPreview: null }
+            : workingSession.stage4?.signalsMeta,
+        }}
+        setSession(workingSession)
+      }
+
+      let stage5Data
+      let stage5Meta = null
+      if (!apiKeySet) {
+        await delay(2200); stage5Data = MOCK_STAGE5
+        stage5Meta = {
+          status: 'complete', generationPartial: false, truncationDetected: false,
+          completedArrays: ['learningSignals', 'refinementTriggers', 'reusablePatterns'],
+          missingArrays: [], outputBudget: COMPACT_GENERATION_LIMITS,
+          generatedAt: null, errorMessage: null,
+        }
+      } else {
+        const prompt  = buildStage5Prompt({ session: workingSession })
+        // 4000 tokens is enough for compact output (5-8 signals + 3-4 triggers + 3-4 patterns
+        // at strict word limits). Prior 6000 caused verbose outputs that truncated triggers.
+        const raw     = await callClaude(prompt, 4000)
+        const parsed  = safeParseStage5(raw)
+        if (!parsed.ok) throw new Error('Stage 5 output could not be parsed. Try regenerating.')
+        stage5Data    = parsed.data
+        stage5Meta    = { ...(parsed.meta || {}), outputBudget: COMPACT_GENERATION_LIMITS }
+      }
+
+      const s5Now = Date.now()
+      setSession(prev => {
+        const nextSession = {
+          ...prev,
+          stage4: workingSession.stage4 !== session.stage4 ? workingSession.stage4 : prev.stage4,
+          stage5: {
+            learningSignals:    stage5Data.learningSignals    || [],
+            reusablePatterns:   stage5Data.reusablePatterns   || [],
+            refinementTriggers: stage5Data.refinementTriggers || [],
+            generatedAt:        s5Now,
+            updatedAt:          s5Now,
+            generationPartial:  stage5Meta?.generationPartial ?? false,
+            generationMeta:     { ...(stage5Meta || {}), generatedAt: s5Now, errorMessage: null },
+          },
+        }
+        nextSession.stage5.sourceLearningSnapshot = captureSourceLearningSnapshot(nextSession)
+        nextSession.stage5.freshness              = { isStale: false, staleSince: null }
+        nextSession.stage5.updateHistory          = []
+        return nextSession
+      })
+      setStep('stage5')
+    } catch (e) {
+      setError(`Stage 5 generation failed: ${e.message}`)
+      setStep(session.stage4 ? 'stage4' : 'stage3')
+    } finally { setIsGeneratingStage5(false) }
+  }
+
+  // ── Stage 5 — Update from latest learning signals ────────────────────────────
+  async function handleUpdateStage5FromLatest() {
+    if (!session.stage5) return
+    setIsGeneratingStage5(true)
+    setError(null)
+    const freshness   = stage5Freshness
+    const staleStages = freshness?.staleStages || []
+    const now         = Date.now()
+    try {
+      const extraSignals = []
+      if (staleStages.includes('stage1')) extraSignals.push(...generateStage1LearningSignals(session, now))
+      if (staleStages.includes('stage2')) extraSignals.push(...generateStage2LearningSignals(session, now))
+      if (staleStages.includes('stage3')) extraSignals.push(...generateStage3LearningSignals(session, now))
+
+      let workingSession = session
+      if (staleStages.includes('stage4')) {
+        const completedArtifacts = (session.stage4?.artifacts || []).filter(a => a.status === 'complete')
+        const existingSignals    = session.stage4?.learningSignals || []
+        const hasValidSignals    = existingSignals.length > 0 && session.stage4?.signalsMeta?.status !== 'error'
+        if (!hasValidSignals && completedArtifacts.length > 0) {
+          const s4Now = now; let s4Signals = []; let s4Mode = 'api'
+          if (!apiKeySet) {
+            s4Signals = enrichSignals(MOCK_STAGE4_SIGNALS.learningSignals || [], s4Now); s4Mode = 'mock'
+          } else {
+            const prompt = buildStage4SignalsPrompt({ session: workingSession })
+            if (prompt) {
+              const raw    = await callClaude(prompt, 3000)
+              const parsed = safeParseSignals(raw)
+              if (parsed.ok && parsed.signals.length > 0) { s4Signals = enrichSignals(parsed.signals, s4Now); s4Mode = 'api' }
+              else { const fb = generateFallbackSignals(completedArtifacts, s4Now); if (fb.length > 0) { s4Signals = fb; s4Mode = 'fallback' } }
+            }
+          }
+          if (s4Signals.length > 0) {
+            workingSession = { ...workingSession, stage4: { ...workingSession.stage4,
+              learningSignals: s4Signals, signalsGeneratedAt: s4Now,
+              signalsMeta: { status: 'current', generationMode: s4Mode, count: s4Signals.length, generatedAt: s4Now, errorType: null, errorMessage: null, failedAt: null, rawPreview: null },
+            }}
+          }
+        }
+      }
+
+      let updateData
+      if (!apiKeySet) {
+        await delay(1800); updateData = MOCK_STAGE5_UPDATE
+      } else {
+        const prompt = buildStage5ReconcilePrompt({ session: workingSession, priorStage5: session.stage5, freshness })
+        const raw    = await callClaude(prompt, 5000)
+        let text = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+        try { updateData = JSON.parse(text) } catch (_) { updateData = MOCK_STAGE5_UPDATE }
+      }
+
+      const prior = session.stage5
+      const merged = {
+        learningSignals:    updateData.learningSignals    || prior.learningSignals    || [],
+        reusablePatterns:   updateData.reusablePatterns   || prior.reusablePatterns   || [],
+        refinementTriggers: updateData.refinementTriggers || prior.refinementTriggers || [],
+        generatedAt:        prior.generatedAt,
+        updatedAt:          now,
+      }
+      const historyEntry = {
+        updatedAt: now, staleStages, changeSummary: updateData.changeSummary || `Reconciled from ${staleStages.join(', ')} changes.`,
+        addedSignalIds: updateData.addedSignalIds || [], updatedPatternIds: updateData.updatedPatternIds || [],
+        retiredPatternIds: updateData.retiredPatternIds || [], retiredSignalIds: updateData.retiredSignalIds || [],
+        extraSignalsAdded: extraSignals.length,
+      }
+      setSession(prev => {
+        const nextSession = { ...prev,
+          stage4: workingSession.stage4 !== session.stage4 ? workingSession.stage4 : prev.stage4,
+          stage5: { ...merged,
+            sourceLearningSnapshot: captureSourceLearningSnapshot({ ...prev, stage4: workingSession.stage4 }),
+            freshness: { isStale: false, staleSince: null },
+            updateHistory: [...(prior.updateHistory || []), historyEntry],
+          },
+        }
+        return nextSession
+      })
+    } catch (e) {
+      setError(`Stage 5 update failed: ${e.message}`)
+    } finally { setIsGeneratingStage5(false) }
+  }
+
+  // ── Pattern library — maturity lifecycle + user notes ────────────────────────
+  function handleUpdatePattern({ patternId, updates }) {
+    setSession(prev => {
+      if (!prev.stage5?.reusablePatterns) return prev
+      const reusablePatterns = prev.stage5.reusablePatterns.map(p =>
+        p.patternId === patternId ? { ...p, ...updates } : p
+      )
+      return { ...prev, stage5: { ...prev.stage5, reusablePatterns } }
     })
   }
 
@@ -1120,6 +1374,10 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     computeStage3ContextHash(session) !== session.stage3.generatedFromStage3ContextHash
   )
 
+  // Stage 5 freshness — compares stored fingerprints to current stage state.
+  // useMemo keeps it cheap: recomputes only when session changes.
+  const stage5Freshness = useMemo(() => checkStage5Freshness(session), [session])
+
   // Severity of Stage 1 changes relative to the snapshot captured at Stage 2 generation.
   // Drives the StaleBanner button set in Stage2Panel — see classifyStage1ChangeSeverity.
   // Returns null when no snapshot exists (pre-feature session) → banner falls back to single rerun.
@@ -1306,6 +1564,37 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             onRefineArtifact={handleRefineStage4Artifact}
             onDeleteArtifact={handleDeleteStage4Artifact}
             onSetActiveArtifact={handleSetActiveArtifact}
+            onGenerateSignals={handleGenerateStage4Signals}
+            onViewStage5={() => setStep('stage5')}
+            isGeneratingSignals={isGeneratingSignals}
+            hasStage5={!!session.stage5}
+            stage5Freshness={stage5Freshness}
+          />
+        )}
+
+        {(effectiveStep === 'stage5_generating') && (
+          <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Generating Stage 5 learning synthesis</div>
+            <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', marginBottom: 20 }}>
+              Synthesising cross-stage signals · building reusable patterns · extracting refinement triggers
+            </div>
+            <div style={{ height: 2, background: 'var(--border)', borderRadius: 1, maxWidth: 240, margin: '0 auto' }}>
+              <div style={{ height: '100%', background: 'linear-gradient(90deg,var(--a3),var(--accent))', borderRadius: 1, width: '70%', animation: 'pulse 1.5s ease-in-out infinite' }} />
+            </div>
+          </div>
+        )}
+
+        {effectiveStep === 'stage5' && (
+          <Stage5Panel
+            session={session}
+            stage5={session.stage5}
+            stage4Signals={session.stage4?.learningSignals || []}
+            onBackToStage4={() => setStep('stage4')}
+            onGenerate={handleGenerateStage5}
+            isGenerating={isGeneratingStage5}
+            freshness={stage5Freshness}
+            onUpdate={handleUpdateStage5FromLatest}
+            onUpdatePattern={handleUpdatePattern}
           />
         )}
       </div>
@@ -1323,6 +1612,119 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+function extractCompleteJsonObjects(arrayText) {
+  const objects = []
+  let i = 0
+  while (i < arrayText.length) {
+    if (arrayText[i] === '{') {
+      let depth = 0; const start = i; let inStr = false; let escaping = false
+      for (; i < arrayText.length; i++) {
+        const c = arrayText[i]
+        if (escaping) { escaping = false; continue }
+        if (c === '\\' && inStr) { escaping = true; continue }
+        if (c === '"') { inStr = !inStr; continue }
+        if (!inStr) {
+          if (c === '{') depth++
+          else if (c === '}') { depth--; if (depth === 0) { try { objects.push(JSON.parse(arrayText.slice(start, i + 1))) } catch (_) {}; i++; break } }
+        }
+      }
+    } else { i++ }
+  }
+  return objects
+}
+
+function safeParseSignals(raw) {
+  const rawPreview = (raw || '').slice(0, 200)
+  if (!raw || raw.trim().length === 0) return { ok: false, signals: [], errorType: 'empty_output', rawPreview }
+  let text = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && Array.isArray(parsed.learningSignals)) return { ok: true, signals: parsed.learningSignals, errorType: null, rawPreview }
+    return { ok: false, signals: [], errorType: 'parse_error', rawPreview }
+  } catch (_) {}
+  const arrMarker = text.indexOf('"learningSignals"')
+  if (arrMarker !== -1) {
+    const bracketIdx = text.indexOf('[', arrMarker)
+    if (bracketIdx !== -1) {
+      const extracted = extractCompleteJsonObjects(text.slice(bracketIdx))
+      if (extracted.length > 0) return { ok: true, signals: extracted, errorType: null, rawPreview }
+    }
+  }
+  return { ok: false, signals: [], errorType: raw.length > 800 ? 'truncated_output' : 'parse_error', rawPreview }
+}
+
+// Strips markdown fences and parses a JSON object — used for artifact + refinement responses.
+function parseJsonResponse(raw) {
+  if (!raw) throw new Error('Empty response from Claude')
+  const text = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+  return JSON.parse(text)
+}
+
+// Safely parses Stage 5 JSON — handles markdown fences and truncated arrays.
+// Returns { ok, data, partial, meta }
+// meta shape: { status, generationPartial, truncationDetected, completedArrays, missingArrays }
+// Output order in prompt: learningSignals → refinementTriggers → reusablePatterns.
+// Using this order means triggers are generated before (verbose) patterns, so even
+// partial responses include triggers if signals completed.
+function safeParseStage5(raw) {
+  const ARRAYS = ['learningSignals', 'refinementTriggers', 'reusablePatterns']
+
+  if (!raw || raw.trim().length === 0) {
+    return { ok: false, meta: { status: 'error', generationPartial: false, truncationDetected: false, completedArrays: [], missingArrays: ARRAYS, errorMessage: 'Empty response' } }
+  }
+
+  const text = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+
+  try {
+    const d = JSON.parse(text)
+    const completedArrays    = ARRAYS.filter(k => Array.isArray(d[k]) && d[k].length > 0)
+    const missingArrays      = ARRAYS.filter(k => !(k in d))
+    const truncationDetected = completedArrays.length > 0 && missingArrays.length > 0
+    const partial            = truncationDetected
+    return {
+      ok: true, data: d, partial,
+      meta: { status: partial ? 'partial' : 'complete', generationPartial: partial, truncationDetected, completedArrays, missingArrays },
+    }
+  } catch (_) {}
+
+  // JSON.parse failed — bracket-depth per-array recovery
+  // Array order matches prompt output order (signals → triggers → patterns)
+  const result = { learningSignals: [], reusablePatterns: [], refinementTriggers: [] }
+  let anyOk = false
+  for (const key of ARRAYS) {
+    const idx = text.indexOf(`"${key}"`)
+    if (idx === -1) continue
+    const bStart = text.indexOf('[', idx)
+    if (bStart === -1) continue
+    const objs = extractCompleteJsonObjects(text.slice(bStart))
+    if (objs.length > 0) { result[key] = objs; anyOk = true }
+  }
+  if (!anyOk) {
+    return { ok: false, meta: { status: 'error', generationPartial: false, truncationDetected: true, completedArrays: [], missingArrays: ARRAYS, errorMessage: 'Parse failed' } }
+  }
+  const completedArrays = ARRAYS.filter(k => result[k].length > 0)
+  const missingArrays   = ARRAYS.filter(k => result[k].length === 0)
+  return {
+    ok: true, data: result, partial: true,
+    meta: { status: 'partial', generationPartial: true, truncationDetected: true, completedArrays, missingArrays },
+  }
+}
+
+function enrichSignals(signals, now) {
+  return signals.map((sig, i) => ({
+    sourceParentStrategyId: null, sourceRefinementIds: [], createdAt: now, updatedAt: now,
+    ...sig, signalId: sig.signalId || `s4sig_${String(i + 1).padStart(3, '0')}`,
+  }))
+}
+
+function getSignalErrorMessage(errorType) {
+  if (errorType === 'truncated_output') return 'Learning signal generation failed because the response was incomplete. Try generating again — if it keeps failing, the response may be timing out.'
+  if (errorType === 'empty_output') return 'Learning signal generation failed because no response was received. Check your API key and try again.'
+  return 'Learning signal generation failed because the response could not be parsed. Try generating again.'
+}
 
 function safeParsePivotJson(text) {
   try { return JSON.parse(text) } catch (_) {}
@@ -1367,10 +1769,6 @@ function updateNode(session, nodeId, changes) {
       ),
     },
   }
-}
-
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function StepBadge({ step }) {

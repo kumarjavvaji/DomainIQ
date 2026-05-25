@@ -188,9 +188,15 @@ export default function Stage4Panel({
   session,
   stage4,
   onBackToStage3,
+  onGenerateArtifact,
   onRefineArtifact,
   onDeleteArtifact,
   onSetActiveArtifact,
+  onGenerateSignals,
+  onViewStage5,
+  isGeneratingSignals,
+  hasStage5,
+  stage5Freshness,
 }) {
   const artifacts = stage4?.artifacts || []
 
@@ -209,8 +215,7 @@ export default function Stage4Panel({
   }, [stage4?.activeArtifactId]) // eslint-disable-line
 
   // Keep activeId valid when artifacts change externally (generation completes
-  // while the panel is already mounted).
-  const active = artifacts.find(a => a.id === activeId) || artifacts[0] || null
+  // while the panel is already mounted). Resolved below alongside isSignalsView.
 
   // ── Tab click — update local state AND persist to session ─────────────────
   function handleTabClick(artifactId) {
@@ -236,6 +241,16 @@ export default function Stage4Panel({
   const groups        = groupArtifacts(artifacts)
   const hasRealGroups = groups.some(g => g.id !== '__ungrouped')
 
+  // 'signals' is a virtual tab — not a real artifact id.
+  const isSignalsView = activeId === 'signals'
+  // When signals is active, don't fall back to artifacts[0].
+  const active = isSignalsView ? null : (artifacts.find(a => a.id === activeId) || artifacts[0] || null)
+
+  const signals     = stage4?.learningSignals || []
+  const signalsMeta = stage4?.signalsMeta
+  const signalCount = signals.length
+  const showS5StaleHint = !!(stage5Freshness?.isStale && (stage5Freshness?.staleStages || []).includes('stage4'))
+
   return (
     <div style={{ maxWidth: 860, padding: 16 }}>
       <div style={{ marginBottom: 14, display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
@@ -243,25 +258,49 @@ export default function Stage4Panel({
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>{session.entity?.name}</div>
           <div style={{ fontSize: 10, color: 'var(--muted2)', fontFamily: 'var(--fm)' }}>Stage 4 — strategy artifact workspace</div>
         </div>
-        <button
-          onClick={onBackToStage3}
-          style={{ fontSize: 9, fontFamily: 'var(--fm)', padding: '4px 10px', background: 'var(--s2)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}
-        >
-          <i className="ti ti-arrow-left" style={{ fontSize: 10 }} /> Stage 3
-        </button>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button
+            onClick={onBackToStage3}
+            style={{ fontSize: 9, fontFamily: 'var(--fm)', padding: '4px 10px', background: 'var(--s2)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}
+          >
+            <i className="ti ti-arrow-left" style={{ fontSize: 10 }} /> Stage 3
+          </button>
+          {onViewStage5 && (
+            <button
+              onClick={onViewStage5}
+              title={hasStage5 ? 'View Stage 5 learning patterns' : 'Generate Stage 5 learning patterns from all stage signals'}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', fontWeight: 600,
+                padding: '4px 12px', borderRadius: 5, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 5,
+                background: hasStage5 ? 'rgba(0,229,180,.12)' : 'var(--s2)',
+                border: `1px solid ${hasStage5 ? 'rgba(0,229,180,.4)' : 'var(--border)'}`,
+                color: hasStage5 ? 'var(--accent)' : 'var(--muted2)',
+              }}
+            >
+              <i className="ti ti-brain" style={{ fontSize: 10 }} />
+              {hasStage5 ? 'Stage 5 — Learning Patterns' : 'Continue to Stage 5'}
+              <i className="ti ti-arrow-right" style={{ fontSize: 9 }} />
+              {stage5Freshness?.isStale && (
+                <i className="ti ti-alert-triangle" style={{ fontSize: 9, color: '#fb923c', marginLeft: 1 }} title="Stage 5 may be out of date" />
+              )}
+            </button>
+          )}
+        </div>
       </div>
 
       {artifacts.length === 0 ? <EmptyArtifactState /> : (
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-          {/* Sidebar */}
+
+          {/* ── Sidebar ─────────────────────────────────────────────────────── */}
           <div style={{ width: 220, flexShrink: 0, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r)', overflow: 'hidden' }}>
             <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em' }}>
               Artifacts ({artifacts.length})
             </div>
+
             <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {/* Artifact tabs (grouped by strategy) */}
               {groups.map(group => {
-                // Show a group header for real strategy groups always.
-                // Show the "Ungrouped artifacts" header only when mixed with real groups.
                 const isRealGroup = group.id !== '__ungrouped'
                 const showHeader  = isRealGroup || hasRealGroups
                 return (
@@ -271,7 +310,7 @@ export default function Stage4Panel({
                       <ArtifactTab
                         key={a.id}
                         artifact={a}
-                        isActive={a.id === active?.id}
+                        isActive={!isSignalsView && a.id === active?.id}
                         isChild={isRealGroup}
                         onClick={() => handleTabClick(a.id)}
                         onDelete={handleDeleteArtifact}
@@ -280,12 +319,79 @@ export default function Stage4Panel({
                   </React.Fragment>
                 )
               })}
+
+              {/* ── Divider — Learning Signals + Stage 5 ────────────────── */}
+              <div style={{ borderTop: '1px solid var(--border)', marginTop: 2 }}>
+                {/* Learning Signals tab — only rendered when handler is wired */}
+                {onGenerateSignals && (
+                  <button
+                    onClick={() => setActiveId('signals')}
+                    style={{
+                      width: '100%', textAlign: 'left', padding: '9px 12px',
+                      background: isSignalsView ? 'rgba(139,92,246,.1)' : 'transparent',
+                      borderLeft: isSignalsView ? '2px solid var(--a3)' : '2px solid transparent',
+                      border: 'none', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', gap: 7,
+                    }}
+                  >
+                    <i className="ti ti-lightbulb" style={{ fontSize: 11, color: isSignalsView ? 'var(--a3)' : 'var(--muted)', flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontSize: 10, color: isSignalsView ? 'var(--text)' : 'var(--muted2)', fontWeight: isSignalsView ? 600 : 400 }}>
+                      Learning Signals
+                    </span>
+                    {signalCount > 0 && (
+                      <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: 'var(--a3)', background: 'rgba(139,92,246,.12)', border: '1px solid rgba(139,92,246,.25)' }}>
+                        {signalCount}
+                      </span>
+                    )}
+                    {showS5StaleHint && (
+                      <i className="ti ti-alert-triangle" style={{ fontSize: 9, color: '#fb923c' }} title="Stage 5 may need update" />
+                    )}
+                  </button>
+                )}
+
+                {/* Stage 5 sidebar tab — always visible independent of onGenerateSignals */}
+                {onViewStage5 && (
+                  <button
+                    onClick={onViewStage5}
+                    style={{
+                      width: '100%', textAlign: 'left', padding: '9px 12px',
+                      background: 'transparent', border: 'none', cursor: 'pointer',
+                      borderLeft: '2px solid transparent',
+                      display: 'flex', alignItems: 'center', gap: 7,
+                    }}
+                  >
+                    <i className="ti ti-brain" style={{ fontSize: 11, color: hasStage5 ? 'var(--accent)' : 'var(--muted)', flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontSize: 10, color: hasStage5 ? 'var(--text)' : 'var(--muted2)' }}>
+                      {hasStage5 ? 'Stage 5 — Patterns' : 'Stage 5 →'}
+                    </span>
+                    {!hasStage5 && (
+                      <i className="ti ti-sparkles" style={{ fontSize: 9, color: 'var(--accent)' }} />
+                    )}
+                    {hasStage5 && stage5Freshness?.isStale && (
+                      <i className="ti ti-alert-triangle" style={{ fontSize: 9, color: '#fb923c' }} title="May be out of date" />
+                    )}
+                    {hasStage5 && !stage5Freshness?.isStale && (
+                      <i className="ti ti-chevron-right" style={{ fontSize: 9, color: 'var(--muted)' }} />
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Main content */}
+          {/* ── Main content ─────────────────────────────────────────────────── */}
           <div style={{ flex: 1, minWidth: 0 }}>
-            {active ? (
+            {isSignalsView ? (
+              <SignalsView
+                signals={signals}
+                signalsMeta={signalsMeta}
+                isGenerating={!!isGeneratingSignals}
+                onGenerate={onGenerateSignals}
+                stage5Freshness={stage5Freshness}
+                hasStage5={hasStage5}
+                onViewStage5={onViewStage5}
+              />
+            ) : active ? (
               <ArtifactViewer
                 key={active.id}
                 artifact={active}
@@ -295,6 +401,330 @@ export default function Stage4Panel({
               />
             ) : <EmptyArtifactState />}
           </div>
+
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Signal type → display config ─────────────────────────────────────────────
+const S4_SIGNAL_TYPES = {
+  artifact_structure_signal:    { label: 'Artifact Structure', color: 'var(--accent)' },
+  audience_framing_signal:      { label: 'Audience Framing',   color: 'var(--a4)'    },
+  refinement_signal:            { label: 'Refinement',         color: '#fb923c'       },
+  version_evolution_signal:     { label: 'Version Evolution',  color: 'var(--a3)'    },
+  readiness_warning_signal:     { label: 'Readiness Warning',  color: '#f87171'       },
+  validation_checkpoint_signal: { label: 'Validation',         color: 'var(--accent)' },
+  negative_learning_signal:     { label: 'Negative Learning',  color: '#f87171'       },
+  decision_tag_signal:          { label: 'Decision Tag',       color: 'var(--a4)'    },
+  artifact_quality_signal:      { label: 'Artifact Quality',   color: 'var(--a3)'    },
+  strategy_execution_signal:    { label: 'Strategy Execution', color: '#fb923c'       },
+}
+
+// ── Signals view — rendered in the main content area when the Signals tab is active ──
+function SignalsView({ signals, signalsMeta, isGenerating, onGenerate, stage5Freshness, hasStage5, onViewStage5 }) {
+  const count    = signals.length
+  const hasError = signalsMeta?.status === 'error'
+  const showS5StaleHint = !!(stage5Freshness?.isStale && (stage5Freshness?.staleStages || []).includes('stage4'))
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r)', overflow: 'hidden' }}>
+      {/* Header */}
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <i className="ti ti-lightbulb" style={{ fontSize: 12, color: 'var(--a3)', flexShrink: 0 }} />
+        <div style={{ flex: 1 }}>
+          <span style={{ fontSize: 11, fontWeight: 600 }}>Stage 4 Learning Signals</span>
+          {count > 0 && <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginLeft: 6 }}>{count} signal{count !== 1 ? 's' : ''}</span>}
+          {signalsMeta?.generatedAt && !isGenerating && (
+            <span style={{ fontSize: 8, fontFamily: 'var(--fm)', color: 'var(--muted)', marginLeft: 8 }}>
+              {new Date(signalsMeta.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
+        {showS5StaleHint && (
+          <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3, color: '#fb923c', background: 'rgba(251,146,60,.1)', border: '1px solid rgba(251,146,60,.3)', display: 'flex', alignItems: 'center', gap: 3 }}>
+            <i className="ti ti-alert-triangle" style={{ fontSize: 8 }} /> Stage 5 may need update
+          </span>
+        )}
+        <button
+          onClick={onGenerate}
+          disabled={isGenerating}
+          style={{ fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px', borderRadius: 4, cursor: isGenerating ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 4, background: hasError ? 'rgba(248,113,113,.1)' : 'var(--s2)', border: `1px solid ${hasError ? 'rgba(248,113,113,.35)' : 'var(--border)'}`, color: hasError ? '#fca5a5' : 'var(--muted)', opacity: isGenerating ? .6 : 1, flexShrink: 0 }}
+        >
+          <i className={`ti ${isGenerating ? 'ti-loader-2' : hasError ? 'ti-refresh' : count > 0 ? 'ti-refresh' : 'ti-sparkles'}`} style={{ fontSize: 9 }} />
+          {isGenerating ? 'Generating…' : hasError ? 'Retry' : count > 0 ? 'Refresh' : 'Generate'}
+        </button>
+      </div>
+
+      {/* Body */}
+      <div style={{ padding: '12px 14px' }}>
+        {isGenerating && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '20px 0', color: 'var(--muted2)' }}>
+            <i className="ti ti-loader-2" style={{ fontSize: 16, color: 'var(--a3)' }} />
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 2 }}>Analysing artifacts…</div>
+              <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)' }}>Extracting learning signals from artifact generation patterns</div>
+            </div>
+          </div>
+        )}
+
+        {!isGenerating && hasError && (
+          <div style={{ padding: '12px 14px', border: '1px solid rgba(248,113,113,.3)', borderRadius: 'var(--r)', background: 'rgba(248,113,113,.04)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <i className="ti ti-alert-triangle" style={{ fontSize: 12, color: '#f87171' }} />
+              <span style={{ fontSize: 10, fontWeight: 600, color: '#fca5a5' }}>Signal generation failed</span>
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>
+              {signalsMeta?.errorMessage || 'The response was incomplete or could not be parsed.'}
+            </div>
+            {signalsMeta?.rawPreview && (
+              <div style={{ marginTop: 6, fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', fontStyle: 'italic' }}>
+                Preview: {signalsMeta.rawPreview.slice(0, 120)}{signalsMeta.rawPreview.length > 120 ? '…' : ''}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isGenerating && !hasError && count === 0 && (
+          <div style={{ textAlign: 'center', padding: '32px 20px' }}>
+            <i className="ti ti-lightbulb" style={{ fontSize: 24, color: 'var(--muted)', display: 'block', marginBottom: 10 }} />
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>No learning signals yet</div>
+            <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6, maxWidth: 300, margin: '0 auto 14px' }}>
+              Generate signals to capture what artifact creation taught you about effective strategy artifacts.
+            </div>
+            <button
+              onClick={onGenerate}
+              style={{ fontSize: 10, fontFamily: 'var(--fm)', padding: '6px 16px', background: 'var(--accent)', border: 'none', borderRadius: 5, cursor: 'pointer', color: '#000', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+            >
+              <i className="ti ti-sparkles" style={{ fontSize: 10 }} /> Generate Learning Signals
+            </button>
+          </div>
+        )}
+
+        {!isGenerating && !hasError && count > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {signals.map(sig => {
+              const typeCfg   = S4_SIGNAL_TYPES[sig.signalType] || { label: sig.signalType, color: 'var(--muted2)' }
+              const confColor = sig.confidence === 'high' ? 'var(--accent)' : sig.confidence === 'medium' ? '#fb923c' : 'var(--muted)'
+              return (
+                <div key={sig.signalId} style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--s2)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, marginBottom: 5, flexWrap: 'wrap' }}>
+                    <span title={`Confidence: ${sig.confidence}`} style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: confColor, flexShrink: 0, marginTop: 4 }} />
+                    <div style={{ flex: 1, fontSize: 10, fontWeight: 600, lineHeight: 1.4 }}>{sig.title}</div>
+                    <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: typeCfg.color, background: `${typeCfg.color}14`, border: `1px solid ${typeCfg.color}30` }}>
+                      {typeCfg.label}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6, marginBottom: sig.applyForwardGuidance ? 6 : 0 }}>{sig.description}</div>
+                  {sig.applyForwardGuidance && (
+                    <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', paddingLeft: 8, borderLeft: '2px solid rgba(0,229,180,.35)', lineHeight: 1.5 }}>
+                      → {sig.applyForwardGuidance}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: 'var(--muted)', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                      {sig.transferability || 'general'}
+                    </span>
+                    {(sig.applicableScopes || []).map(sc => (
+                      <span key={sc} style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: 'var(--muted)', background: 'var(--surface)', border: '1px solid var(--border)' }}>{sc}</span>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+
+            {/* Stage 5 nudge at the bottom of the signals list */}
+            {onViewStage5 && (
+              <div style={{ marginTop: 4, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--surface)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <i className="ti ti-brain" style={{ fontSize: 12, color: hasStage5 ? 'var(--accent)' : 'var(--a3)', flexShrink: 0 }} />
+                <div style={{ flex: 1, fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted2)' }}>
+                  {hasStage5 ? 'View cross-stage synthesis in Stage 5.' : 'Ready to synthesise cross-stage patterns in Stage 5.'}
+                </div>
+                <button
+                  onClick={onViewStage5}
+                  style={{ fontSize: 9, fontFamily: 'var(--fm)', padding: '4px 12px', background: hasStage5 ? 'rgba(0,229,180,.1)' : 'var(--accent)', border: `1px solid ${hasStage5 ? 'rgba(0,229,180,.35)' : 'var(--accent)'}`, borderRadius: 4, cursor: 'pointer', color: hasStage5 ? 'var(--accent)' : '#000', fontWeight: hasStage5 ? 400 : 600, display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                >
+                  <i className={`ti ${hasStage5 ? 'ti-eye' : 'ti-sparkles'}`} style={{ fontSize: 9 }} />
+                  {hasStage5 ? 'View Stage 5' : 'Generate Stage 5'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Stage 4 learning signals drawer (kept for backward compat, no longer rendered in main panel) ──
+function LearningSignalsDrawer({ signals, isGenerating, onGenerate, signalsMeta, stage5Freshness }) {
+  // Auto-open when signals already exist at mount time (e.g. navigating back to Stage 4).
+  const [open, setOpen] = useState(() => signals.length > 0)
+  const count    = signals.length
+  // Also auto-open when signals first arrive while the panel is mounted (generation just completed).
+  const prevCount = useRef(signals.length)
+  useEffect(() => {
+    if (signals.length > 0 && prevCount.current === 0) setOpen(true)
+    prevCount.current = signals.length
+  }, [signals.length])
+  const status   = isGenerating
+    ? 'generating'
+    : (signalsMeta?.status || (count > 0 ? 'current' : 'empty'))
+  const hasError = status === 'error'
+  const showS5StaleHint = !!(stage5Freshness?.isStale && (stage5Freshness?.staleStages || []).includes('stage4'))
+
+  const STATUS_CFG = {
+    empty:      { label: 'Empty',      color: 'var(--muted)'  },
+    generating: { label: 'Generating', color: 'var(--a4)'    },
+    current:    { label: 'Current',    color: 'var(--accent)' },
+    stale:      { label: 'Stale',      color: '#fb923c'       },
+    error:      { label: 'Error',      color: '#f87171'       },
+  }
+  const statusCfg  = STATUS_CFG[status] || { label: status, color: 'var(--muted)' }
+  const generatedAt = signalsMeta?.generatedAt || null
+
+  return (
+    <div style={{
+      background: 'var(--surface)',
+      border: `1px solid ${hasError ? 'rgba(248,113,113,.4)' : 'var(--border)'}`,
+      borderRadius: 'var(--r)', overflow: 'hidden',
+    }}>
+      {/* Header row */}
+      <div
+        style={{
+          padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8,
+          cursor: count > 0 ? 'pointer' : 'default', userSelect: 'none',
+          borderBottom: open && count > 0 ? '1px solid var(--border)' : 'none',
+          background: hasError ? 'rgba(248,113,113,.03)' : 'transparent',
+        }}
+        onClick={() => count > 0 && setOpen(o => !o)}
+      >
+        <i className="ti ti-lightbulb" style={{ fontSize: 11, color: hasError ? '#f87171' : 'var(--a4)', flexShrink: 0 }} />
+        <span style={{ fontSize: 10, fontWeight: 600, flex: 1 }}>
+          Stage 4 Learning Signals
+          {count > 0 && <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 5 }}>({count})</span>}
+        </span>
+
+        {/* Status badge */}
+        {!isGenerating && (
+          <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: statusCfg.color, background: `${statusCfg.color}14`, border: `1px solid ${statusCfg.color}30`, flexShrink: 0 }}>
+            {statusCfg.label}
+          </span>
+        )}
+
+        {/* Timestamp */}
+        {generatedAt && !hasError && !isGenerating && (
+          <span style={{ fontSize: 8, fontFamily: 'var(--fm)', color: 'var(--muted)', flexShrink: 0 }}>
+            {new Date(generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        )}
+
+        {/* Generating indicator */}
+        {isGenerating && (
+          <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a4)', display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+            <i className="ti ti-loader-2" style={{ fontSize: 9 }} /> Generating…
+          </span>
+        )}
+
+        {/* Retry button — only when error and not generating */}
+        {hasError && !isGenerating && (
+          <button
+            onClick={e => { e.stopPropagation(); onGenerate() }}
+            style={{ fontSize: 9, fontFamily: 'var(--fm)', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, background: 'rgba(248,113,113,.1)', border: '1px solid rgba(248,113,113,.35)', color: '#fca5a5', flexShrink: 0 }}
+          >
+            <i className="ti ti-refresh" style={{ fontSize: 9 }} /> Retry
+          </button>
+        )}
+
+        {/* Generate / Refresh button */}
+        {!hasError && !isGenerating && (
+          <button
+            onClick={e => { e.stopPropagation(); onGenerate() }}
+            style={{ fontSize: 9, fontFamily: 'var(--fm)', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, background: 'var(--s2)', border: '1px solid var(--border)', color: 'var(--muted)', flexShrink: 0 }}
+          >
+            <i className={`ti ${count > 0 ? 'ti-refresh' : 'ti-sparkles'}`} style={{ fontSize: 9 }} />
+            {count > 0 ? 'Refresh' : 'Generate'}
+          </button>
+        )}
+
+        {/* Stage 5 stale hint */}
+        {showS5StaleHint && !isGenerating && (
+          <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3, color: '#fb923c', background: 'rgba(251,146,60,.1)', border: '1px solid rgba(251,146,60,.3)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3 }}>
+            <i className="ti ti-alert-triangle" style={{ fontSize: 8 }} /> Stage 5 may need update
+          </span>
+        )}
+
+        {/* Chevron when signals exist */}
+        {count > 0 && (
+          <i className={`ti ti-chevron-${open ? 'up' : 'down'}`} style={{ fontSize: 10, color: 'var(--muted)' }} />
+        )}
+      </div>
+
+      {/* Error body */}
+      {hasError && !isGenerating && (
+        <div style={{ padding: '10px 14px', minHeight: 60 }}>
+          <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.65 }}>
+            {signalsMeta?.errorMessage || 'Learning signal generation failed because the response was incomplete or could not be parsed.'}
+          </div>
+          {signalsMeta?.rawPreview && (
+            <div style={{ marginTop: 6, fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', fontStyle: 'italic', lineHeight: 1.4 }}>
+              Preview: {signalsMeta.rawPreview.slice(0, 120)}{signalsMeta.rawPreview.length > 120 ? '…' : ''}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Generating body */}
+      {isGenerating && (
+        <div style={{ padding: '12px 14px', minHeight: 80, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <i className="ti ti-loader-2" style={{ fontSize: 16, color: 'var(--a4)' }} />
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 2 }}>Analysing artifacts…</div>
+            <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)' }}>Extracting learning signals from artifact generation patterns</div>
+          </div>
+        </div>
+      )}
+
+      {/* Signal list */}
+      {open && count > 0 && !isGenerating && (
+        <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 220 }}>
+          {signals.map(sig => {
+            const typeCfg   = S4_SIGNAL_TYPES[sig.signalType] || { label: sig.signalType, color: 'var(--muted2)' }
+            const confColor = sig.confidence === 'high' ? 'var(--accent)' : sig.confidence === 'medium' ? '#fb923c' : 'var(--muted)'
+            return (
+              <div key={sig.signalId} style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--s2)' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, marginBottom: 5, flexWrap: 'wrap' }}>
+                  <span title={`Confidence: ${sig.confidence}`} style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: confColor, flexShrink: 0, marginTop: 4 }} />
+                  <div style={{ flex: 1, fontSize: 10, fontWeight: 600, lineHeight: 1.4 }}>{sig.title}</div>
+                  <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: typeCfg.color, background: `${typeCfg.color}14`, border: `1px solid ${typeCfg.color}30` }}>
+                    {typeCfg.label}
+                  </span>
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6, marginBottom: 6 }}>{sig.description}</div>
+                {sig.applyForwardGuidance && (
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', paddingLeft: 8, borderLeft: '2px solid rgba(0,229,180,.35)', lineHeight: 1.5 }}>
+                    → {sig.applyForwardGuidance}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: 'var(--muted)', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                    {sig.transferability || 'general'}
+                  </span>
+                  {(sig.applicableScopes || []).map(sc => (
+                    <span key={sc} style={{ fontSize: 8, fontFamily: 'var(--fm)', padding: '1px 5px', borderRadius: 3, color: 'var(--muted)', background: 'var(--surface)', border: '1px solid var(--border)' }}>{sc}</span>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!hasError && !isGenerating && count === 0 && (
+        <div style={{ padding: '6px 14px 10px', fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)' }}>
+          Generate signals to capture what artifact creation taught you about effective strategy artifacts.
         </div>
       )}
     </div>
@@ -510,29 +940,19 @@ function ArtifactViewer({ artifact, onRefine }) {
     }
   }, [artifact.refineStatus]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (artifact.status === 'generating') return <GeneratingState />
-  if (artifact.status === 'error') {
-    return (
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r)', padding: 16 }}>
-        <div style={{ padding: '10px 14px', background: 'rgba(248,113,113,.06)', border: '1px solid rgba(248,113,113,.25)', borderRadius: 'var(--r)', fontSize: 11, color: '#f87171', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <i className="ti ti-alert-triangle" /> Artifact generation failed: {artifact.errorMessage || 'Unknown error'}
-        </div>
-      </div>
-    )
-  }
-
+  // Derived values computed BEFORE useMemo and BEFORE early returns — satisfies
+  // React's unconditional hook-ordering rule (useMemo is a hook and must not
+  // appear after a conditional return).
   const versions          = getVersions(artifact)
   const activeVersion     = getActiveVersion(artifact)
   const displayVersion    = viewingVersionId
     ? (getVersionById(artifact, viewingVersionId) || activeVersion)
     : activeVersion
-
-  if (!displayVersion?.data) return <EmptyArtifactState />
-
   const isRefining          = artifact.refineStatus === 'refining'
   const isViewingPrior      = !!(viewingVersionId && viewingVersionId !== activeVersion?.id)
   const hasMultipleVersions = versions.length > 1
 
+  // useMemo must be unconditional — declared before all early returns
   const sectionSpans = useMemo(() => {
     if (!hasMultipleVersions || !displayVersion?.data) return {}
     const result = {}
@@ -545,6 +965,19 @@ function ArtifactViewer({ artifact, onRefine }) {
     }
     return result
   }, [displayVersion?.id, versions.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Early returns — all hooks (useState, useRef, useEffect, useMemo) called above
+  if (artifact.status === 'generating') return <GeneratingState />
+  if (artifact.status === 'error') {
+    return (
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r)', padding: 16 }}>
+        <div style={{ padding: '10px 14px', background: 'rgba(248,113,113,.06)', border: '1px solid rgba(248,113,113,.25)', borderRadius: 'var(--r)', fontSize: 11, color: '#f87171', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <i className="ti ti-alert-triangle" /> Artifact generation failed: {artifact.errorMessage || 'Unknown error'}
+        </div>
+      </div>
+    )
+  }
+  if (!displayVersion?.data) return <EmptyArtifactState />
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
