@@ -4,6 +4,7 @@ import Stage1Panel from './Stage1Panel'
 import Stage2Panel from './Stage2Panel'
 import Stage2RerunReview from './Stage2RerunReview'
 import Stage3Panel from './Stage3Panel'
+import Stage4Panel from './Stage4Panel'
 import ChallengeModal from './ChallengeModal'
 import {
   buildStage1Prompt,
@@ -12,6 +13,9 @@ import {
   buildStage2ReconcilePrompt,
   buildPivotPrompt,
   buildStage3Prompt,
+  buildStrategyOptionsUpdatePrompt,
+  buildStrategyMenuPrompt,
+  buildStage4ArtifactPrompt,
   MOCK_V4_STAGE1,
   MOCK_PRESSURE_TEST_RESULT_REVISE,
   MOCK_PRESSURE_TEST_RESULT_PRESERVE,
@@ -19,6 +23,10 @@ import {
   MOCK_V4_STAGE2_RECONCILE,
   MOCK_PIVOT_RESULT,
   MOCK_V4_STAGE3,
+  MOCK_STRATEGY_MENU,
+  MOCK_STAGE4_ARTIFACT,
+  buildStage4ArtifactRefinementPrompt,
+  MOCK_STAGE4_ARTIFACT_REFINED,
 } from '../v4prompts'
 import {
   getDirectDeps,
@@ -41,10 +49,11 @@ import { callClaude, callClaudeWithSearch } from '../api'
 
 // step: 'intent' | 'generating' | 'inspect' | 'regenerating'
 //     | 'stage2_generating' | 'stage2' | 'stage2_candidate_review'
-//     | 'stage3_generating' | 'stage3'
+//     | 'stage3_generating' | 'stage3' | 'stage4'
 export default function SessionFlow({ sessionId, savedSession, globalPolicy, apiKeySet, onSave, onBack }) {
   const [step, setStep]           = useState(
     savedSession?.stage2RerunCandidate?.status === 'pending_review' ? 'stage2_candidate_review' :
+    savedSession?.stage4?.artifacts?.length > 0 ? 'stage4' :
     savedSession?.stage3  ? 'stage3'  :
     savedSession?.stage2  ? 'stage2'  :
     savedSession?.stage1  ? 'inspect' : 'intent'
@@ -53,6 +62,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   const [challengingNodeId, setChallengeNodeId] = useState(null)
   const [diff, setDiff]           = useState(null)
   const [error, setError]         = useState(null)
+  const [isUpdatingStrategyOptions, setIsUpdatingStrategyOptions] = useState(false)
+  const [isGeneratingStrategyMenu, setIsGeneratingStrategyMenu]   = useState(false)
 
   // Persist whenever session changes
   useEffect(() => {
@@ -63,6 +74,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   useEffect(() => {
     if (step === 'stage2' && !session.stage2 && session.stage1) { setStep('inspect') }
     if (step === 'stage3' && !session.stage3 && session.stage2) { setStep('stage2') }
+    if (step === 'stage4' && !session.stage4 && session.stage3) { setStep('stage3') }
     if (step === 'stage2_candidate_review' && !session.stage2RerunCandidate) { setStep('stage2') }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -568,6 +580,279 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     }
   }
 
+  // ── Stage 3 Evidence Map refinement ──────────────────────────────────────────
+
+  function handleApplyEvidenceRefinement(itemIndex, logEntry) {
+    setSession(prev => {
+      const evidenceMap = [...(prev.stage3?.evidenceMap || [])]
+      const item = { ...(evidenceMap[itemIndex] || {}) }
+      item.refinementLog = [...(item.refinementLog || []), logEntry]
+      if (logEntry.applied && logEntry.appliedUpdate) {
+        const u = logEntry.appliedUpdate
+        if ('observation'  in u) item.observation  = u.observation
+        if ('evidenceBasis' in u) item.evidenceBasis = u.evidenceBasis
+        if ('implication'  in u) item.implication  = u.implication
+        if ('strength'     in u) item.strength     = u.strength
+        item._refined = true
+      }
+      evidenceMap[itemIndex] = item
+      return { ...prev, stage3: { ...prev.stage3, evidenceMap } }
+    })
+  }
+
+  function handleMarkStrategyStale() {
+    setSession(prev => ({
+      ...prev,
+      stage3: { ...prev.stage3, _strategyMenuNeedsRefresh: true },
+    }))
+  }
+
+  async function handleUpdateStrategyOptions() {
+    if (!session.stage3) return
+    setIsUpdatingStrategyOptions(true)
+    setError(null)
+    try {
+      let updatedOptions
+      if (!apiKeySet) {
+        await new Promise(r => setTimeout(r, 1500))
+        updatedOptions = session.stage3.strategicOptions || []
+      } else {
+        const prompt = buildStrategyOptionsUpdatePrompt({
+          thesis:                 session.stage3.thesis?.text,
+          refinedEvidenceMap:     session.stage3.evidenceMap || [],
+          insightClusters:        session.stage3.insightClusters || [],
+          risks:                  session.stage3.risksConstraintsUnknowns || [],
+          currentStrategicOptions: session.stage3.strategicOptions || [],
+        })
+        const raw = await callClaude(prompt, 4000)
+        const parsed = JSON.parse(raw)
+        updatedOptions = parsed.strategicOptions || []
+      }
+      setSession(prev => ({
+        ...prev,
+        stage3: {
+          ...prev.stage3,
+          strategicOptions:          updatedOptions,
+          _strategyMenuNeedsRefresh: false,
+          _previousStrategicOptions: prev.stage3.strategicOptions,
+        },
+      }))
+    } catch (e) {
+      setError(`Strategy options update failed: ${e.message}`)
+    } finally {
+      setIsUpdatingStrategyOptions(false)
+    }
+  }
+
+  // ── Strategy Menu generation (separate call, not bundled into Stage 3) ────────
+  async function handleGenerateStrategyMenu() {
+    if (!session.stage3) return
+    setIsGeneratingStrategyMenu(true)
+    setError(null)
+    try {
+      let menuData
+      if (!apiKeySet) {
+        await delay(1800)
+        menuData = MOCK_STRATEGY_MENU
+      } else {
+        const prompt = buildStrategyMenuPrompt({
+          thesis:           session.stage3.thesis,
+          evidenceMap:      session.stage3.evidenceMap || [],
+          insightClusters:  session.stage3.insightClusters || [],
+          risks:            session.stage3.risksConstraintsUnknowns || [],
+          strategicOptions: session.stage3.strategicOptions || [],
+          entity:           session.entity,
+        })
+        const raw = await callClaude(prompt, 8000)
+        menuData = JSON.parse(raw)
+      }
+      setSession(prev => ({
+        ...prev,
+        stage3: { ...prev.stage3, strategyMenu: menuData.strategyMenu || [] },
+      }))
+    } catch (e) {
+      setError(`Strategy menu generation failed: ${e.message}`)
+    } finally {
+      setIsGeneratingStrategyMenu(false)
+    }
+  }
+
+  // ── Stage 4 artifact generation ───────────────────────────────────────────────
+  // Creates an artifact entry immediately (status: 'generating'), switches to
+  // Stage 4, then fills in the result asynchronously so the tab is visible
+  // while the API call runs.
+  async function handleGenerateStage4Artifact({ strategyOption, persona }) {
+    const artifactId = 'art_' + Date.now()
+    const stub = {
+      id:                 artifactId,
+      sourceStrategyId:   strategyOption.id,
+      sourceStrategyName: strategyOption.strategyName,
+      strategyPosture:    strategyOption.investmentPosture,
+      persona,
+      generatedAt:        Date.now(),
+      status:             'generating',
+      data:               null,
+      errorMessage:       null,
+    }
+
+    // Add stub and navigate to Stage 4 immediately
+    setSession(prev => ({
+      ...prev,
+      stage4: {
+        artifacts:       [...((prev.stage4?.artifacts) || []), stub],
+        activeArtifactId: artifactId,
+      },
+    }))
+    setStep('stage4')
+
+    try {
+      let artifactData
+      if (!apiKeySet) {
+        await delay(2000)
+        artifactData = MOCK_STAGE4_ARTIFACT
+      } else {
+        const prompt = buildStage4ArtifactPrompt({
+          entity:           session.entity,
+          thesis:           session.stage3?.thesis,
+          evidenceMap:      session.stage3?.evidenceMap || [],
+          insightClusters:  session.stage3?.insightClusters || [],
+          risks:            session.stage3?.risksConstraintsUnknowns || [],
+          selectedStrategy: strategyOption,
+          persona,
+        })
+        const raw = await callClaude(prompt, 4000)
+        artifactData = JSON.parse(raw)
+      }
+      const v1 = {
+        id:               artifactId + '_v1',
+        versionNumber:    1,
+        createdAt:        Date.now(),
+        refinementContext: null,
+        changeSummary:    null,
+        data:             artifactData,
+      }
+      setSession(prev => ({
+        ...prev,
+        stage4: {
+          ...prev.stage4,
+          artifacts: (prev.stage4?.artifacts || []).map(a =>
+            a.id !== artifactId ? a : {
+              ...a,
+              status:          'complete',
+              data:            artifactData,
+              versions:        [v1],
+              activeVersionId: v1.id,
+            }
+          ),
+        },
+      }))
+    } catch (e) {
+      setSession(prev => ({
+        ...prev,
+        stage4: {
+          ...prev.stage4,
+          artifacts: (prev.stage4?.artifacts || []).map(a =>
+            a.id !== artifactId ? a : { ...a, status: 'error', errorMessage: e.message }
+          ),
+        },
+      }))
+    }
+  }
+
+  // ── Stage 4 artifact refinement ───────────────────────────────────────────────
+  // Revises an existing artifact with added user context. Preserves the prior
+  // version and appends a new version; sets activeVersionId to the new version.
+  async function handleRefineStage4Artifact({ artifactId, refinementContext }) {
+    const artifact = session.stage4?.artifacts?.find(a => a.id === artifactId)
+    if (!artifact) return
+
+    // Build base versions — backward compat for artifacts without .versions
+    const baseVersions = artifact.versions?.length > 0
+      ? artifact.versions
+      : [{
+          id:               artifact.id + '_v1',
+          versionNumber:    1,
+          createdAt:        artifact.generatedAt || Date.now(),
+          refinementContext: null,
+          changeSummary:    null,
+          data:             artifact.data,
+        }]
+
+    const activeVersion = artifact.activeVersionId
+      ? baseVersions.find(v => v.id === artifact.activeVersionId)
+      : baseVersions[baseVersions.length - 1]
+
+    const sourceStrategy = (session.stage3?.strategyMenu || []).find(s => s.id === artifact.sourceStrategyId)
+      || { strategyName: artifact.sourceStrategyName, investmentPosture: artifact.strategyPosture }
+
+    // Mark refining — keeps existing content visible, shows "Refining…" in tab
+    setSession(prev => ({
+      ...prev,
+      stage4: {
+        ...prev.stage4,
+        artifacts: (prev.stage4?.artifacts || []).map(a =>
+          a.id !== artifactId ? a : { ...a, refineStatus: 'refining', refineError: null }
+        ),
+      },
+    }))
+
+    try {
+      let refinedData
+      if (!apiKeySet) {
+        await delay(2200)
+        refinedData = MOCK_STAGE4_ARTIFACT_REFINED
+      } else {
+        const prompt = buildStage4ArtifactRefinementPrompt({
+          entity:             session.entity,
+          currentVersionData: activeVersion?.data || artifact.data,
+          selectedStrategy:   sourceStrategy,
+          persona:            artifact.persona,
+          refinementContext,
+          versionNumber:      baseVersions.length,
+        })
+        const raw = await callClaude(prompt, 4000)
+        refinedData = JSON.parse(raw)
+      }
+
+      const newVersionId = artifactId + '_v' + (baseVersions.length + 1)
+      const newVersion = {
+        id:               newVersionId,
+        versionNumber:    baseVersions.length + 1,
+        createdAt:        Date.now(),
+        refinementContext,
+        changeSummary:    refinedData.changeSummary || '',
+        data:             refinedData,
+      }
+
+      setSession(prev => ({
+        ...prev,
+        stage4: {
+          ...prev.stage4,
+          artifacts: (prev.stage4?.artifacts || []).map(a =>
+            a.id !== artifactId ? a : {
+              ...a,
+              data:            refinedData,
+              versions:        [...baseVersions, newVersion],
+              activeVersionId: newVersionId,
+              refineStatus:    null,
+              refineError:     null,
+            }
+          ),
+        },
+      }))
+    } catch (e) {
+      setSession(prev => ({
+        ...prev,
+        stage4: {
+          ...prev.stage4,
+          artifacts: (prev.stage4?.artifacts || []).map(a =>
+            a.id !== artifactId ? a : { ...a, refineStatus: 'error', refineError: e.message }
+          ),
+        },
+      }))
+    }
+  }
+
   // ── Stage 2 refinement acceptance (proposal only — Stage 1 not mutated) ─────
   function handleAcceptRefinement(nodeId) {
     setSession(prev => ({
@@ -959,6 +1244,26 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             isStale={isStage3Stale}
             onBackToStage2={() => setStep('stage2')}
             onRerunStage3={handleRunStage3}
+            onApplyEvidenceRefinement={handleApplyEvidenceRefinement}
+            onMarkStrategyStale={handleMarkStrategyStale}
+            onUpdateStrategyOptions={handleUpdateStrategyOptions}
+            isStrategyMenuStale={!!session.stage3._strategyMenuNeedsRefresh}
+            isUpdatingStrategyOptions={isUpdatingStrategyOptions}
+            apiKeySet={apiKeySet}
+            onGenerateStrategyMenu={handleGenerateStrategyMenu}
+            isGeneratingStrategyMenu={isGeneratingStrategyMenu}
+            onGenerateStage4Artifact={handleGenerateStage4Artifact}
+            onViewStage4={() => setStep('stage4')}
+          />
+        )}
+
+        {effectiveStep === 'stage4' && session.stage4 && (
+          <Stage4Panel
+            session={session}
+            stage4={session.stage4}
+            onBackToStage3={() => setStep('stage3')}
+            onGenerateArtifact={handleGenerateStage4Artifact}
+            onRefineArtifact={handleRefineStage4Artifact}
           />
         )}
       </div>
@@ -1037,6 +1342,7 @@ function StepBadge({ step }) {
     stage2_candidate_review:  { label: 'Stage 2 — reviewing update', color: 'var(--a4)'    },
     stage3_generating:        { label: 'Stage 3 — synthesizing…',    color: 'var(--a3)'    },
     stage3:                   { label: 'Stage 3 — synthesis',         color: '#fb923c'      },
+    stage4:                   { label: 'Stage 4 — artifacts',          color: 'var(--accent)'},
   }
   const cfg = labels[step] || labels.intent
   return (
