@@ -699,7 +699,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     setSession(prev => ({
       ...prev,
       stage4: {
-        artifacts:       [...((prev.stage4?.artifacts) || []), stub],
+        ...prev.stage4,
+        artifacts:        [...((prev.stage4?.artifacts) || []), stub],
         activeArtifactId: artifactId,
       },
     }))
@@ -731,31 +732,38 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         changeSummary:    null,
         data:             artifactData,
       }
-      setSession(prev => ({
-        ...prev,
-        stage4: {
-          ...prev.stage4,
-          artifacts: (prev.stage4?.artifacts || []).map(a =>
-            a.id !== artifactId ? a : {
-              ...a,
-              status:          'complete',
-              data:            artifactData,
-              versions:        [v1],
-              activeVersionId: v1.id,
-            }
-          ),
-        },
-      }))
+      // Guard: artifact may have been deleted while generation was in flight
+      setSession(prev => {
+        if (!(prev.stage4?.artifacts || []).find(a => a.id === artifactId)) return prev
+        return {
+          ...prev,
+          stage4: {
+            ...prev.stage4,
+            artifacts: (prev.stage4?.artifacts || []).map(a =>
+              a.id !== artifactId ? a : {
+                ...a,
+                status:          'complete',
+                data:            artifactData,
+                versions:        [v1],
+                activeVersionId: v1.id,
+              }
+            ),
+          },
+        }
+      })
     } catch (e) {
-      setSession(prev => ({
-        ...prev,
-        stage4: {
-          ...prev.stage4,
-          artifacts: (prev.stage4?.artifacts || []).map(a =>
-            a.id !== artifactId ? a : { ...a, status: 'error', errorMessage: e.message }
-          ),
-        },
-      }))
+      setSession(prev => {
+        if (!(prev.stage4?.artifacts || []).find(a => a.id === artifactId)) return prev
+        return {
+          ...prev,
+          stage4: {
+            ...prev.stage4,
+            artifacts: (prev.stage4?.artifacts || []).map(a =>
+              a.id !== artifactId ? a : { ...a, status: 'error', errorMessage: e.message }
+            ),
+          },
+        }
+      })
     }
   }
 
@@ -851,6 +859,38 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         },
       }))
     }
+  }
+
+  // ── Stage 4 artifact deletion ─────────────────────────────────────────────────
+  // Removes the artifact record entirely from session.stage4.artifacts.
+  // activeArtifactId in session state is updated in the same transaction.
+  // Selection reassignment within Stage4Panel is handled by local state there.
+  function handleDeleteStage4Artifact({ artifactId }) {
+    setSession(prev => {
+      const artifacts = (prev.stage4?.artifacts || []).filter(a => a.id !== artifactId)
+      const currentActive = prev.stage4?.activeArtifactId
+      return {
+        ...prev,
+        stage4: {
+          ...prev.stage4,
+          artifacts,
+          activeArtifactId: currentActive === artifactId
+            ? (artifacts[0]?.id || null)
+            : currentActive,
+        },
+      }
+    })
+  }
+
+  // ── Stage 4 active artifact selection (persists tab pick to session) ─────────
+  function handleSetActiveArtifact({ artifactId }) {
+    setSession(prev => {
+      if (!prev.stage4) return prev
+      return {
+        ...prev,
+        stage4: { ...prev.stage4, activeArtifactId: artifactId },
+      }
+    })
   }
 
   // ── Stage 2 refinement acceptance (proposal only — Stage 1 not mutated) ─────
@@ -1264,6 +1304,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             onBackToStage3={() => setStep('stage3')}
             onGenerateArtifact={handleGenerateStage4Artifact}
             onRefineArtifact={handleRefineStage4Artifact}
+            onDeleteArtifact={handleDeleteStage4Artifact}
+            onSetActiveArtifact={handleSetActiveArtifact}
           />
         )}
       </div>
