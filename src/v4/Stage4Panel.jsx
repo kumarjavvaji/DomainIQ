@@ -1,4 +1,9 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
+import {
+  buildStrategyBasisPackage,
+  buildExportFilename,
+  downloadStrategyBasisPackage,
+} from '../utils/strategyBasisExport'
 
 // ── Posture colour lookup ──────────────────────────────────────────────────────
 const POSTURE_COLOR = {
@@ -395,6 +400,7 @@ export default function Stage4Panel({
               <ArtifactViewer
                 key={active.id}
                 artifact={active}
+                session={session}
                 onRefine={({ refinementContext }) =>
                   onRefineArtifact({ artifactId: active.id, refinementContext })
                 }
@@ -918,13 +924,14 @@ function ArtifactTab({ artifact, isActive, isChild = false, onClick, onDelete })
 }
 
 // ── Artifact viewer ────────────────────────────────────────────────────────────
-function ArtifactViewer({ artifact, onRefine }) {
+function ArtifactViewer({ artifact, session, onRefine }) {
   const [refinementCtx,    setRefinementCtx]   = useState('')
   const [showRefine,       setShowRefine]       = useState(false)
   const [showHistory,      setShowHistory]      = useState(false)
   const [viewingVersionId, setViewingVersionId] = useState(null)
   const [showHighlights,   setShowHighlights]   = useState(true)
   const [confirmMsg,       setConfirmMsg]       = useState(null)
+  const [exportMsg,        setExportMsg]        = useState(null)
   const prevRefineStatusRef = useRef(artifact.refineStatus)
 
   useEffect(() => {
@@ -965,6 +972,14 @@ function ArtifactViewer({ artifact, onRefine }) {
     }
     return result
   }, [displayVersion?.id, versions.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleExport() {
+    const pkg      = buildStrategyBasisPackage(session, artifact, displayVersion)
+    const filename = buildExportFilename(session, artifact, displayVersion)
+    downloadStrategyBasisPackage(pkg, filename)
+    setExportMsg('Strategy Basis Package exported.')
+    setTimeout(() => setExportMsg(null), 4000)
+  }
 
   // Early returns — all hooks (useState, useRef, useEffect, useMemo) called above
   if (artifact.status === 'generating') return <GeneratingState />
@@ -1013,6 +1028,39 @@ function ArtifactViewer({ artifact, onRefine }) {
           <button onClick={() => setConfirmMsg(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11 }}><i className="ti ti-x" /></button>
         </div>
       )}
+
+      {/* ── Export Strategy Basis Package ─────────────────────────────────── */}
+      <div style={{
+        padding: '10px 14px',
+        background: 'var(--surface)', border: '1px solid var(--border)',
+        borderRadius: 'var(--r)',
+        display: 'flex', alignItems: 'center', gap: 10,
+      }}>
+        <i className="ti ti-package-export" style={{ fontSize: 13, color: 'var(--a4)', flexShrink: 0 }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 1 }}>Export Strategy Basis Package</div>
+          <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)' }}>
+            Download a structured JSON package with this artifact version + upstream strategy basis for use in Business Strategy Execution Studio.
+          </div>
+        </div>
+        {exportMsg ? (
+          <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            <i className="ti ti-circle-check" style={{ fontSize: 11 }} /> {exportMsg}
+          </span>
+        ) : (
+          <button
+            onClick={handleExport}
+            style={{
+              fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+              padding: '5px 14px', borderRadius: 5, cursor: 'pointer',
+              background: 'rgba(90,80,220,.12)', border: '1px solid rgba(90,80,220,.35)',
+              color: 'var(--a4)', display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+            }}
+          >
+            <i className="ti ti-download" style={{ fontSize: 10 }} /> Export
+          </button>
+        )}
+      </div>
 
       {!isViewingPrior && (
         <RefinementPanel
