@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { idbPut } from '../idb'
 import IntentCapture from './IntentCapture'
 import Stage1Panel from './Stage1Panel'
 import Stage2Panel from './Stage2Panel'
@@ -56,6 +57,7 @@ import {
   computeStage1Changes,
   classifyStage1ChangeSeverity,
   getReconcileImpactedSections,
+  classifyStage2Response,
 } from '../v4utils'
 import { callClaude, callClaudeWithSearch } from '../api'
 
@@ -343,7 +345,46 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           inferredPatterns: ctx.inferredPatterns,
         })
         const { text, rawSearchBlocks } = await callClaudeWithSearch(prompt, 5500, 5)
-        stage2Data = JSON.parse(text)
+
+        // --- Stage 2 schema guard ---
+        // Parse with an explicit try/catch so a JSON failure doesn't silently fall
+        // through to the outer catch (which would wipe the step without saving raw output).
+        let parsed
+        try {
+          parsed = JSON.parse(text)
+        } catch (parseErr) {
+          idbPut('rawResponses', {
+            id:         'raw_stage2_' + Date.now(),
+            sessionId,
+            type:       'parse_failure',
+            rawText:    text,
+            error:      parseErr.message,
+            capturedAt: Date.now(),
+          }).catch(() => {})
+          setError('Stage 2 response could not be parsed as JSON. Previous output preserved. Raw response saved for inspection.')
+          setStep(isRerun ? 'stage2' : 'inspect')
+          return
+        }
+
+        const responseClass = classifyStage2Response(parsed)
+        if (responseClass !== 'valid') {
+          idbPut('rawResponses', {
+            id:         'raw_stage2_' + Date.now(),
+            sessionId,
+            type:       responseClass,   // 'pressure_test_fallback' | 'malformed'
+            rawData:    parsed,
+            capturedAt: Date.now(),
+          }).catch(() => {})
+          setError(
+            responseClass === 'pressure_test_fallback'
+              ? 'Stage 2 returned a pressure-test response instead of research expansion. Previous Stage 2 data is preserved.'
+              : 'Stage 2 response did not match expected schema. Previous Stage 2 data is preserved. Raw response saved for inspection.'
+          )
+          setStep(isRerun ? 'stage2' : 'inspect')
+          return
+        }
+
+        stage2Data = parsed
         stage2Data._rawSearchBlocks = rawSearchBlocks
       }
 

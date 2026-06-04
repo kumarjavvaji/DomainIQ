@@ -1,6 +1,35 @@
 // DomainIQ v4 — pure utility functions for diff, dependency resolution, and context summarization
 // No React, no side effects.
 
+// ── Stage 2 response classifier ───────────────────────────────────────────────
+//
+// Returns: 'valid' | 'pressure_test_fallback' | 'malformed'
+//
+// 'valid'                 — response has Stage 2 keys; safe to write as canonical stage2
+// 'pressure_test_fallback'— response has pressure-test / retrieval-failed shape; must NOT
+//                           overwrite canonical stage2; save to rawResponses instead
+// 'malformed'             — unparseable, null, or missing all Stage 2 keys; save raw + error
+//
+const STAGE2_REQUIRED_KEYS = [
+  'summary', 'evidenceConsolidation', 'refinedAssertions',
+  'competitorMap', 'emergingEntrants', 'adjacencyOpportunities',
+]
+
+export function classifyStage2Response(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return 'malformed'
+
+  // Pressure-test / retrieval-failed shape: decision + challengedNodeId at top level,
+  // or explicit retrieval_failed decision without Stage 2 keys.
+  if ('decision' in data && 'challengedNodeId' in data) return 'pressure_test_fallback'
+  if (data.decision === 'retrieval_failed')              return 'pressure_test_fallback'
+
+  // Valid Stage 2: must have at least one of the expected top-level section keys
+  const hasStage2Key = STAGE2_REQUIRED_KEYS.some(k => k in data)
+  if (!hasStage2Key) return 'malformed'
+
+  return 'valid'
+}
+
 // Returns nodes that node.dependsOn points to.
 export function getDirectDeps(node, allNodes) {
   const deps = node.dependsOn || []
