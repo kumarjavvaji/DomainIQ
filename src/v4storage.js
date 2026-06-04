@@ -1,27 +1,19 @@
-// DomainIQ v4 — localStorage hooks
-// Mirrors the pattern of v3 useStorage.js but uses diq_v4_* keys.
-// v3 hooks are untouched.
+// DomainIQ v4 — IndexedDB-backed storage hooks
+//
+// Both hooks accept an `init*` argument that carries the pre-loaded data from
+// initializeV4Storage(). App.jsx passes null until init resolves, then passes
+// the real data. Hooks apply it exactly once (via ref guard) so they never
+// race with migration and never re-apply stale init data after the user edits.
+//
+// localStorage is no longer written to. Existing keys remain untouched as
+// backup until an explicit cleanup task removes them.
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { V4_STORAGE_KEYS, DEFAULT_GENERATION_POLICY } from './v4schema'
+import { idbPut, idbDelete } from './idb'
 
-function load(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? JSON.parse(raw) : fallback
-  } catch {
-    return fallback
-  }
-}
-
-function persist(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch (err) {
-    console.error('[DomainIQ] Failed to persist to localStorage', { key, error: err })
-  }
-}
-
+// Strip large ephemeral search blocks before persisting — they bloat storage
+// and are re-fetched on demand. Called on every save.
 function sanitizeSessionForStorage(session) {
   if (!session?.stage2 || typeof session.stage2 !== 'object') return session
   const { _rawSearchBlocks, ...safeStage2 } = session.stage2
@@ -29,57 +21,97 @@ function sanitizeSessionForStorage(session) {
   return { ...session, stage2: { ...safeStage2, pivots: safePivots } }
 }
 
-function sanitizeSessionsForStorage(sessions) {
-  const out = {}
-  for (const [id, session] of Object.entries(sessions)) {
-    out[id] = sanitizeSessionForStorage(session)
-  }
-  return out
-}
+// ── Sessions ──────────────────────────────────────────────────────────────────
+//
+// initSessions: null  — not yet initialized (App is still running initializeV4Storage)
+//               {}    — initialized, no sessions in IDB
+//               {...} — initialized, sessions loaded from IDB
+//
+export function useSessions(initSessions) {
+  const [sessions, setSessions] = useState({})
+  const initApplied = useRef(false)
 
-// Sessions — each session owns its entity, intent, stage1 result, and policy snapshot.
-export function useSessions() {
-  const [sessions, setSessions] = useState(() => load(V4_STORAGE_KEYS.SESSIONS, {}))
+  // Apply init data exactly once — when it transitions from null to real data.
+  // After that, sessions are managed locally and mirrored to IDB on every write.
+  useEffect(() => {
+    if (initSessions !== null && !initApplied.current) {
+      initApplied.current = true
+      setSessions(initSessions)
+    }
+  }, [initSessions])
 
   const saveSession = useCallback((id, session) => {
-    setSessions(prev => {
-      const next = { ...prev, [id]: session }
-      persist(V4_STORAGE_KEYS.SESSIONS, sanitizeSessionsForStorage(next))
-      return next
-    })
+    const sanitized = sanitizeSessionForStorage(session)
+    const record = {
+      ...sanitized,
+      id,
+      schemaVersion: 4,
+      createdAt:     sanitized.createdAt || sanitized.ts || Date.now(),
+      updatedAt:     Date.now(),
+    }
+    setSessions(prev => ({ ...prev, [id]: record }))
+    idbPut('sessions', record).catch(err =>
+      console.error('[DomainIQ] Failed to persist session to IDB', { id, err })
+    )
   }, [])
 
   const deleteSession = useCallback((id) => {
     setSessions(prev => {
       const next = { ...prev }
       delete next[id]
-      persist(V4_STORAGE_KEYS.SESSIONS, next)
       return next
     })
+    idbDelete('sessions', id).catch(err =>
+      console.error('[DomainIQ] Failed to delete session from IDB', { id, err })
+    )
   }, [])
 
   return { sessions, saveSession, deleteSession }
 }
 
-// Global generation policy — provides the default snapshot applied to new sessions.
-// Sessions snapshot this at creation time; edits here don't retroactively affect saved sessions.
-export function useGenerationPolicy() {
-  const [policy, setPolicyState] = useState(() =>
-    load(V4_STORAGE_KEYS.POLICY, DEFAULT_GENERATION_POLICY)
-  )
+// ── Generation policy ─────────────────────────────────────────────────────────
+//
+// initPolicy: null    — not yet initialized
+//             {...}   — policy loaded from IDB (already merged with DEFAULT_GENERATION_POLICY
+//                       by initializeV4Storage)
+//
+export function useGenerationPolicy(initPolicy) {
+  const [policy, setPolicyState] = useState(DEFAULT_GENERATION_POLICY)
+  const initApplied = useRef(false)
+
+  useEffect(() => {
+    if (initPolicy !== null && !initApplied.current) {
+      initApplied.current = true
+      setPolicyState({ ...DEFAULT_GENERATION_POLICY, ...initPolicy })
+    }
+  }, [initPolicy])
 
   const updatePolicy = useCallback((updates) => {
     setPolicyState(prev => {
       const next = { ...prev, ...updates }
-      persist(V4_STORAGE_KEYS.POLICY, next)
+      idbPut('policies', {
+        id:            'global_policy',
+        schemaVersion: 4,
+        updatedAt:     Date.now(),
+        ...next,
+      }).catch(err => console.error('[DomainIQ] Failed to persist policy to IDB', err))
       return next
     })
   }, [])
 
   const resetPolicy = useCallback(() => {
     setPolicyState(DEFAULT_GENERATION_POLICY)
-    persist(V4_STORAGE_KEYS.POLICY, DEFAULT_GENERATION_POLICY)
+    idbPut('policies', {
+      id:            'global_policy',
+      schemaVersion: 4,
+      updatedAt:     Date.now(),
+      ...DEFAULT_GENERATION_POLICY,
+    }).catch(err => console.error('[DomainIQ] Failed to reset policy in IDB', err))
   }, [])
 
   return { policy, updatePolicy, resetPolicy }
 }
+
+// ── Legacy localStorage key reference — do not remove ────────────────────────
+// Kept here so migration.js and tests can import the canonical key list.
+export { V4_STORAGE_KEYS }

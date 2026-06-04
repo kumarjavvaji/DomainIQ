@@ -1,9 +1,10 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { useProjects, usePatterns } from './useStorage'
 import { callClaude, buildPrompt, hasApiKey } from './api'
 import { getTrust, confPct, TABS, FOCUS_OPTIONS, PERSONA_ICONS, ANALYSIS_STAGES } from './constants'
 import { MOCK_PROJECT, MOCK_PATTERNS } from './mockData'
 import { useSessions, useGenerationPolicy } from './v4storage'
+import { initializeV4Storage } from './v4init'
 import SessionFlow from './v4/SessionFlow'
 
 // ─────────────────────────────────────────────────────────────
@@ -13,9 +14,23 @@ export default function App() {
   const { projects, saveProject, deleteProject } = useProjects()
   const { patterns, mergePatterns } = usePatterns()
 
+  // v4 storage initialization — null until IndexedDB is open and migration is done.
+  // Hooks receive null initially and apply real data only after this resolves,
+  // preventing any race between migration and IDB reads.
+  const [v4Init, setV4Init] = useState(null)
+
+  useEffect(() => {
+    initializeV4Storage()
+      .then(setV4Init)
+      .catch(err => {
+        console.error('[DomainIQ] Storage init failed, starting with empty state:', err)
+        setV4Init({ sessions: {}, policy: null })
+      })
+  }, [])
+
   // v4 state — additive, does not replace v3
-  const { sessions, saveSession, deleteSession } = useSessions()
-  const { policy: globalPolicy } = useGenerationPolicy()
+  const { sessions, saveSession, deleteSession } = useSessions(v4Init?.sessions ?? null)
+  const { policy: globalPolicy } = useGenerationPolicy(v4Init?.policy ?? null)
   const [activeSessionId, setActiveSessionId] = useState(null)
 
   const [view, setView]             = useState('home')   // home | project | patterns | overlays | v4session
@@ -180,10 +195,13 @@ export default function App() {
             {/* v4 sessions section */}
             <div style={S.sbSection}>
               <div style={S.sbLabel}>Sessions</div>
-              {Object.keys(sessions).length === 0 && (
+              {v4Init === null && (
+                <div style={{ fontSize: 10, color: 'var(--muted)', padding: '3px 8px', fontFamily: 'var(--fm)' }}>Loading…</div>
+              )}
+              {v4Init !== null && Object.keys(sessions).length === 0 && (
                 <div style={{ fontSize: 10, color: 'var(--muted)', padding: '3px 8px' }}>No sessions yet</div>
               )}
-              {Object.entries(sessions)
+              {v4Init !== null && Object.entries(sessions)
                 .sort(([, a], [, b]) => (b.ts || 0) - (a.ts || 0))
                 .map(([id, s]) => (
                   <div
