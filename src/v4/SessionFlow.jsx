@@ -60,12 +60,13 @@ import {
   classifyStage2Response,
 } from '../v4utils'
 import { callClaude, callClaudeWithSearch } from '../api'
+import { generateDIQStage1ViaBridge, generateDIQStage2PivotViaBridge } from '../services/atbClient'
 
 // step: 'intent' | 'generating' | 'inspect' | 'regenerating'
 //     | 'stage2_generating' | 'stage2' | 'stage2_candidate_review'
 //     | 'stage3_generating' | 'stage3' | 'stage4'
 //     | 'stage5_generating' | 'stage5'
-export default function SessionFlow({ sessionId, savedSession, globalPolicy, apiKeySet, onSave, onBack }) {
+export default function SessionFlow({ sessionId, savedSession, globalPolicy, updatePolicy, apiKeySet, onSave, onBack }) {
   const [step, setStep]           = useState(
     savedSession?.stage2RerunCandidate?.status === 'pending_review' ? 'stage2_candidate_review' :
     savedSession?.stage4?.artifacts?.length > 0 ? 'stage4' :
@@ -195,10 +196,9 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     setChallengeNodeId(null)
   }
 
-  // ── Needs review — system-directed precision hardening ────────
+  // ── Needs review — routes through ATB bridge review (challenge semantics)
   function handleNeedsReviewClick(nodeId) {
-    setSession(prev => updateNode(prev, nodeId, { userStatus: 'needs_review' }))
-    handleRegenNode(nodeId, 'system_review')
+    handleRegenNode(nodeId, 'needs_review')
   }
 
   // ── Pressure test / system review for a single node ──────────
@@ -207,21 +207,120 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     const challengedNode = nodes.find(n => n.id === nodeId)
     if (!challengedNode) return
 
+    // ── Needs review: fall back to local status only when ATB bridge is off ──
+    // When ATB is enabled, ATB owns provider key selection server-side.
+    // The DIQ frontend API key is irrelevant for the bridge path.
+    if (mode === 'needs_review') {
+      const useATB = !!session.generationPolicy?.useAiToolBridgeForStage1
+      if (!useATB) {
+        setSession(prev => updateNode(prev, nodeId, { userStatus: 'needs_review' }))
+        setError('Bridge review requires the ATB toggle. Enable "Use AI Tool Bridge" in generation settings to run a live review.')
+        return
+      }
+      // ATB is ON — fall through to the bridge path; ATB resolves its own provider key.
+    }
+
     setStep('regenerating')
     setDiff(null)
     setError(null)
 
-    try {
-      const directDeps       = getDirectDeps(challengedNode, nodes)
-      const directDownstream = getDirectDownstream(challengedNode, nodes)
-      const acceptedSummary  = buildAcceptedSummary(nodes)
+    // ATB toggle is re-read here; it was also read inside the needs_review block
+    // above but that block may have returned early, so this read is always needed.
+    const useATB = !!session.generationPolicy?.useAiToolBridgeForStage1
 
-      let ptResult
-      let rawSearchBlocks = []
+    try {
+      if (useATB) {
+        // ── ATB bridge path — ATB selects its own provider key server-side ───
+        // The DIQ frontend API key is NOT consulted here; checking apiKeySet
+        // before useATB would incorrectly block bridge calls when no DIQ key
+        // is configured (the whole point of routing through ATB).
+        // Wrap current session in a synthetic fixture so ATB's adapter can
+        // locate the node. The adapter reads fixture.stores['sessions'].
+        const syntheticFixture = {
+          fixtureVersion: 1,
+          sourceApp: 'diq',
+          exportedAt: new Date().toISOString(),
+          databaseName: 'domainiq_v4',
+          stores: { sessions: [session] },
+        }
+        const operation = mode === 'system_review' ? 'refine' : 'challenge'
+
+        const atbResult = await generateDIQStage1ViaBridge({
+          generationMode: 'bridge',
+          session,
+          sessionId: session.id,
+          nodeId,
+          operation,
+          fixture: syntheticFixture,
+        })
+
+        if (atbResult.applied && atbResult.session?.stage1) {
+          // Verify something visibly changed before treating the result as a success.
+          // For refine: statement must be different from original.
+          // For challenge: challenge assessment fields must be populated on the returned node.
+          const returnedNode = (atbResult.session.stage1.nodes || []).find(n => n.id === nodeId)
+          // Guard: require node to exist in the returned session; undefined !== string is true
+          // but that would be a missing-node case, not a genuine statement change.
+          const statementChanged = returnedNode != null && returnedNode.statement !== challengedNode.statement
+          const challengeAdded   = !!returnedNode?.challenge
+
+          if (!statementChanged && !challengeAdded) {
+            setError(
+              'AI Tool Bridge: generation applied but produced no visible node change. ' +
+              'Check ATB diagnostics or toggle off to use the legacy path.'
+            )
+            setStep('inspect')
+            return
+          }
+
+          // Bridge applied the result — update session directly, no DiffView.
+          // ATB guarantees session is not mutated; we replace stage1 from the response.
+          const record = {
+            triggeredBy:    nodeId,
+            decision:       operation === 'challenge' ? 'bridge_challenge' : 'bridge_refine',
+            userNote:       challengedNode.userNote,
+            timestamp:      Date.now(),
+            policyOverride: null,
+            nodesChanged:   [nodeId],
+            mode,
+            _bridgeMode:    true,
+          }
+          // For needs_review: ATB sets userStatus:'challenged' on the node; override it
+          // back to 'needs_review' so the badge and panel reflect the user's intent.
+          const finalNodes = mode === 'needs_review'
+            ? (atbResult.session.stage1.nodes || []).map(n =>
+                n.id === nodeId ? { ...n, userStatus: 'needs_review' } : n
+              )
+            : atbResult.session.stage1.nodes
+          setSession(prev => ({
+            ...prev,
+            stage1: {
+              ...atbResult.session.stage1,
+              nodes: finalNodes,
+              refinementHistory: [
+                ...(atbResult.session.stage1.refinementHistory || []),
+                record,
+              ],
+            },
+          }))
+        } else {
+          // Bridge completed but did not apply (legacy delegation, capability reject,
+          // or APPLY_REFINE_NULL_STATEMENT guardrail fired).
+          const messages = (atbResult.diagnostics || []).map(d => d.message).filter(Boolean)
+          setError(
+            messages.length
+              ? `AI Tool Bridge: ${messages.join(' | ')}`
+              : 'AI Tool Bridge: generation did not apply. Toggle off to use the legacy path.'
+          )
+        }
+        setStep('inspect')
+        return
+      }
 
       if (!apiKeySet) {
-        // Demo mode — system_review always uses preserve mock; challenge on n3 uses revise mock
+        // ── Demo mode (ATB off, no DIQ API key) ─────────────────────────────
         await delay(1400)
+        let ptResult, rawSearchBlocks
         if (nodeId === 'n3' && mode !== 'system_review') {
           const mock = MOCK_PRESSURE_TEST_RESULT_REVISE
           ptResult = mock.ptResult
@@ -231,25 +330,47 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           ptResult = { ...mock.ptResult, challengedNodeId: nodeId }
           rawSearchBlocks = mock.rawSearchBlocks
         }
-      } else {
-        const prompt = buildPressureTestPrompt({
-          challengedNode,
-          directDeps,
-          directDownstream,
-          intent:         session.intent,
-          policy:         session.generationPolicy,
+        const newDiff = computeDiff(nodes, ptResult)
+        newDiff._ptResult = ptResult
+        newDiff._rawSearchBlocks = rawSearchBlocks
+        setDiff(newDiff)
+        setStep('inspect')
+        const record = {
+          triggeredBy: nodeId, decision: ptResult.decision,
+          userNote: challengedNode.userNote, timestamp: Date.now(),
           policyOverride: null,
-          acceptedSummary,
+          nodesChanged: ptResult.decision === 'revise_claim' && ptResult.revisedNode
+            ? [ptResult.revisedNode.id, ...(ptResult.updatedDownstream || []).map(n => n.id)]
+            : [],
           mode,
-        })
-        const { text, rawSearchBlocks: blocks } = await callClaudeWithSearch(prompt, 3500)
-        rawSearchBlocks = blocks
-        ptResult = JSON.parse(text)
-        // Safety net: Claude occasionally omits challengedNodeId from response.
-        // Patch it back from the nodeId we issued the pressure test for.
-        if (!ptResult.challengedNodeId) {
-          ptResult = { ...ptResult, challengedNodeId: nodeId }
         }
+        setSession(prev => ({
+          ...prev,
+          stage1: { ...prev.stage1, refinementHistory: [...(prev.stage1.refinementHistory || []), record] },
+        }))
+        return
+      }
+
+      // ── Legacy path — direct Claude call (ATB off, DIQ API key present) ───
+      const directDeps       = getDirectDeps(challengedNode, nodes)
+      const directDownstream = getDirectDownstream(challengedNode, nodes)
+      const acceptedSummary  = buildAcceptedSummary(nodes)
+
+      const prompt = buildPressureTestPrompt({
+        challengedNode,
+        directDeps,
+        directDownstream,
+        intent:         session.intent,
+        policy:         session.generationPolicy,
+        policyOverride: null,
+        acceptedSummary,
+        mode,
+      })
+      const { text, rawSearchBlocks } = await callClaudeWithSearch(prompt, 3500)
+      let ptResult = JSON.parse(text)
+      // Safety net: Claude occasionally omits challengedNodeId from response.
+      if (!ptResult.challengedNodeId) {
+        ptResult = { ...ptResult, challengedNodeId: nodeId }
       }
 
       // Validate new shape — if decision field missing, this is the old shape
@@ -260,18 +381,15 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       }
 
       const newDiff = computeDiff(nodes, ptResult)
-      // Attach full ptResult + raw search evidence to the diff object
       newDiff._ptResult = ptResult
       newDiff._rawSearchBlocks = rawSearchBlocks
 
       setDiff(newDiff)
       setStep('inspect')
 
-      // Record in refinement history
       const nodesChanged = ptResult.decision === 'revise_claim' && ptResult.revisedNode
         ? [ptResult.revisedNode.id, ...(ptResult.updatedDownstream || []).map(n => n.id)]
         : []
-
       const record = {
         triggeredBy:    nodeId,
         decision:       ptResult.decision,
@@ -1218,6 +1336,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     if ((session.stage2?.pivots || []).some(p => p.type === type && p.status === 'generating')) return
     const pivotId      = 'pivot_' + Date.now()
     const snapSession  = session
+    const useATBForStage2 = !!session.generationPolicy?.useAiToolBridgeForStage2Pivot
 
     setSession(prev => ({
       ...prev,
@@ -1246,6 +1365,76 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
 
     try {
       let pivotData
+
+      if (useATBForStage2) {
+        // ── ATB bridge path — ATB manages provider key server-side ────────────
+        // Toggle ON is checked BEFORE !apiKeySet: DIQ browser API key is not
+        // required when routing through ATB.
+        const syntheticFixture = {
+          fixtureVersion: 1,
+          sourceApp: 'diq',
+          exportedAt: new Date().toISOString(),
+          databaseName: 'domainiq_v4',
+          stores: { sessions: [snapSession] },
+        }
+
+        const atbResult = await generateDIQStage2PivotViaBridge({
+          sessionId:     snapSession.id,
+          pivotId,
+          pivotType:     type,
+          pivotTitle:    title,
+          targetNodeIds: targetNodeIds || [],
+          userDirection: userDirection || '',
+          fixture:       syntheticFixture,
+        })
+
+        if (!atbResult.isUsable) {
+          const messages = (atbResult.diagnostics || []).map(d => d.message).filter(Boolean)
+          throw new Error(
+            messages.length
+              ? `ATB: ${messages.join(' | ')}`
+              : 'ATB returned unusable pivot output. Check ATB diagnostics or toggle off.',
+          )
+        }
+
+        // Normalize proposedUpdate IDs using DIQ's pivot-scoped scheme.
+        // ATB may return generic IDs (pu_1, pu_2); DIQ overrides with pu_${pivotId}_${i}
+        // to prevent collisions across multiple pivots in the same session.
+        const normalizedUpdates = (atbResult.proposedUpdates || []).map((u, i) => ({
+          ...u,
+          id:             `pu_${pivotId}_${i}`,
+          status:         'proposed',
+          userNote:       null,
+          userRefinedText: null,
+          decidedAt:      null,
+        }))
+
+        const analysisFoundation = atbResult.analysisFoundation ?? null
+
+        setSession(prev => ({
+          ...prev,
+          stage2: {
+            ...prev.stage2,
+            pivots: (prev.stage2?.pivots || []).map(p =>
+              p.id !== pivotId ? p : {
+                ...p,
+                status:                      'complete',
+                generatedAt:                 new Date().toISOString(),
+                displaySummary:              atbResult.displaySummary || '',
+                analysisFoundation,
+                proposedUpdates:             normalizedUpdates,
+                unresolvedQuestions:         atbResult.unresolvedQuestions || [],
+                additionalSearchSuggestions: atbResult.additionalSearchSuggestions || [],
+                stage3Implications:          atbResult.stage3Implications || [],
+                _rawSearchBlocks:            [],   // ATB has no live search; field preserved for shape compatibility
+                errorMessage:                null,
+                _bridgePivot:                true,
+              }
+            ),
+          },
+        }))
+        return
+      }
 
       if (!apiKeySet) {
         await delay(2000)
@@ -1485,6 +1674,16 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             policy={session.generationPolicy}
             apiKeySet={apiKeySet}
             onSubmit={handleIntentSubmit}
+            onUpdatePolicy={updatePolicy ? (updates) => {
+              // Persist to global policy (IDB) AND update session.generationPolicy so
+              // the checkbox reflects the change immediately — session.generationPolicy
+              // is a snapshot set at session creation and does not react to globalPolicy.
+              updatePolicy(updates)
+              setSession(prev => ({
+                ...prev,
+                generationPolicy: { ...prev.generationPolicy, ...updates },
+              }))
+            } : undefined}
           />
         )}
 

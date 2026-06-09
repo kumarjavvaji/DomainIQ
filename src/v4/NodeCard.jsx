@@ -109,7 +109,7 @@ export default function NodeCard({ node, allNodes, onStatusChange, onChallengeCl
         )}
       </div>
 
-      {/* Challenge note display */}
+      {/* Challenge note display — user-authored note */}
       {node.userStatus === 'challenged' && (node.userNote || node.userPreset) && (
         <div style={{
           fontSize: 10, padding: '6px 8px', marginBottom: 8,
@@ -122,6 +122,31 @@ export default function NodeCard({ node, allNodes, onStatusChange, onChallengeCl
             </span>
           )}
           <span style={{ color: 'var(--muted2)' }}>{node.userNote}</span>
+        </div>
+      )}
+
+      {/* Bridge challenge assessment — populated by ATB bridge challenge operation */}
+      {node._bridgeGenerated && node.challenge && (
+        <div style={{
+          fontSize: 10, padding: '8px 10px', marginBottom: 8,
+          background: 'rgba(124,108,250,.06)', border: '1px solid rgba(124,108,250,.25)',
+          borderRadius: 6, lineHeight: 1.65,
+        }}>
+          <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a2)', marginBottom: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <i className="ti ti-robot" style={{ fontSize: 10 }} />
+            Bridge assessment
+            {node.concernType && (
+              <span style={{ marginLeft: 4, padding: '1px 5px', borderRadius: 3, background: 'rgba(124,108,250,.12)', fontSize: 9 }}>
+                {node.concernType}
+              </span>
+            )}
+          </div>
+          <div style={{ color: 'var(--muted2)', marginBottom: node.suggestion ? 6 : 0 }}>{node.challenge}</div>
+          {node.suggestion && (
+            <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', borderTop: '1px solid rgba(124,108,250,.15)', paddingTop: 5, marginTop: 2 }}>
+              <i className="ti ti-arrow-right" style={{ fontSize: 9, verticalAlign: -1 }} /> {node.suggestion}
+            </div>
+          )}
         </div>
       )}
 

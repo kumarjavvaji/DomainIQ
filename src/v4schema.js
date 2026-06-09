@@ -81,4 +81,11 @@ export const DEFAULT_GENERATION_POLICY = {
   requireConfidence:           true,
   maxNewConceptsPerRun:        3,
   maxOutputWords:              900,
+  // Route Stage 1 node pressure tests through AI Tool Bridge when true.
+  // Default OFF — legacy direct-Claude path is used unless explicitly enabled.
+  useAiToolBridgeForStage1:    false,
+  // Route Stage 2 investigative pivot generation through AI Tool Bridge when true.
+  // Note: ATB pivot uses parametric knowledge only — no live web search retrieval.
+  // Default OFF — legacy direct-Claude path is used unless explicitly enabled.
+  useAiToolBridgeForStage2Pivot: false,
 }

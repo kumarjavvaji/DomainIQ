@@ -30,7 +30,7 @@ export default function App() {
 
   // v4 state — additive, does not replace v3
   const { sessions, saveSession, deleteSession } = useSessions(v4Init?.sessions ?? null)
-  const { policy: globalPolicy } = useGenerationPolicy(v4Init?.policy ?? null)
+  const { policy: globalPolicy, updatePolicy } = useGenerationPolicy(v4Init?.policy ?? null)
   const [activeSessionId, setActiveSessionId] = useState(null)
 
   const [view, setView]             = useState('home')   // home | project | patterns | overlays | v4session
@@ -245,6 +245,7 @@ export default function App() {
               sessionId={activeSessionId}
               savedSession={sessions[activeSessionId] || null}
               globalPolicy={globalPolicy}
+              updatePolicy={updatePolicy}
               apiKeySet={hasApiKey()}
               onSave={saveSession}
               onBack={goHome}

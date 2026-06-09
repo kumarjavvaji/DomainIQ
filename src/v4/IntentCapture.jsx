@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { ENTITY_TYPES, ROLE_LENSES, DEPTH_OPTIONS, RESEARCH_OUTCOMES } from '../v4schema'
 import { policyLabel } from '../v4utils'
 
-export default function IntentCapture({ policy, apiKeySet, onSubmit }) {
+export default function IntentCapture({ policy, apiKeySet, onSubmit, onUpdatePolicy }) {
   const [entityType, setEntityType] = useState('company')
   const [entityName, setEntityName] = useState('')
   const [entityContext, setEntityContext] = useState('')
@@ -165,15 +165,82 @@ export default function IntentCapture({ policy, apiKeySet, onSubmit }) {
         </div>
       </div>
 
-      {/* Policy badge */}
+      {/* Policy badge + ATB toggle */}
       <div style={{
-        fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)',
-        padding: '6px 10px', background: 'var(--s2)', border: '1px solid var(--border)',
-        borderRadius: 6, marginBottom: 14,
-        display: 'flex', alignItems: 'center', gap: 5,
+        background: 'var(--s2)', border: '1px solid var(--border)',
+        borderRadius: 6, marginBottom: 14, overflow: 'hidden',
       }}>
-        <i className="ti ti-shield-check" style={{ fontSize: 10, color: 'var(--accent)' }} />
-        Policy: {policyLabel(policy)}
+        <div style={{
+          fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)',
+          padding: '6px 10px',
+          display: 'flex', alignItems: 'center', gap: 5,
+        }}>
+          <i className="ti ti-shield-check" style={{ fontSize: 10, color: 'var(--accent)' }} />
+          Policy: {policyLabel(policy)}
+        </div>
+        {onUpdatePolicy && (
+          <>
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: 7,
+              padding: '5px 10px 7px',
+              borderTop: '1px solid var(--border)',
+              cursor: 'pointer',
+              fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)',
+            }}>
+              <input
+                type="checkbox"
+                checked={!!policy?.useAiToolBridgeForStage1}
+                onChange={e => onUpdatePolicy({ useAiToolBridgeForStage1: e.target.checked })}
+                style={{ cursor: 'pointer' }}
+              />
+              <span>Use AI Tool Bridge for Stage 1 node operations</span>
+              {policy?.useAiToolBridgeForStage1 && (
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--fm)',
+                  color: 'var(--accent)', marginLeft: 'auto',
+                  padding: '1px 6px', borderRadius: 3,
+                  background: 'rgba(0,229,180,.08)', border: '1px solid rgba(0,229,180,.2)',
+                }}>
+                  Bridge ON
+                </span>
+              )}
+            </label>
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: 7,
+              padding: '5px 10px 7px',
+              borderTop: '1px solid var(--border)',
+              cursor: 'pointer',
+              fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)',
+            }}>
+              <input
+                type="checkbox"
+                checked={!!policy?.useAiToolBridgeForStage2Pivot}
+                onChange={e => onUpdatePolicy({ useAiToolBridgeForStage2Pivot: e.target.checked })}
+                style={{ cursor: 'pointer' }}
+              />
+              <span>Use AI Tool Bridge for Stage 2 pivot generation</span>
+              {policy?.useAiToolBridgeForStage2Pivot && (
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--fm)',
+                  color: 'var(--accent)', marginLeft: 'auto',
+                  padding: '1px 6px', borderRadius: 3,
+                  background: 'rgba(0,229,180,.08)', border: '1px solid rgba(0,229,180,.2)',
+                }}>
+                  Bridge ON
+                </span>
+              )}
+            </label>
+            {policy?.useAiToolBridgeForStage2Pivot && (
+              <div style={{
+                padding: '3px 10px 6px', fontSize: 9, fontFamily: 'var(--fm)',
+                color: 'var(--muted)', borderTop: '1px solid var(--border)',
+              }}>
+                <i className="ti ti-info-circle" style={{ marginRight: 4, fontSize: 9 }} />
+                ATB pivot uses parametric knowledge only — no live web search retrieval.
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* Submit */}
