@@ -243,7 +243,11 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, upd
           databaseName: 'domainiq_v4',
           stores: { sessions: [session] },
         }
-        const operation = mode === 'system_review' ? 'refine' : 'challenge'
+        // Refine intent: explicit system_review mode, or user note indicates they
+        // want a replacement statement rather than a challenge assessment.
+        const operation = (mode === 'system_review' || hasRefineIntent(challengedNode.userNote))
+          ? 'refine'
+          : 'challenge'
 
         const atbResult = await generateDIQStage1ViaBridge({
           generationMode: 'bridge',
@@ -356,6 +360,12 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, upd
       const directDownstream = getDirectDownstream(challengedNode, nodes)
       const acceptedSummary  = buildAcceptedSummary(nodes)
 
+      // Mirror the refine-intent detection used in the ATB path so the legacy
+      // prompt is also oriented toward replacement when the user note implies it.
+      const legacyMode = (mode !== 'system_review' && hasRefineIntent(challengedNode.userNote))
+        ? 'system_review'
+        : mode
+
       const prompt = buildPressureTestPrompt({
         challengedNode,
         directDeps,
@@ -364,7 +374,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, upd
         policy:         session.generationPolicy,
         policyOverride: null,
         acceptedSummary,
-        mode,
+        mode:           legacyMode,
       })
       const { text, rawSearchBlocks } = await callClaudeWithSearch(prompt, 3500)
       let ptResult = JSON.parse(text)
@@ -1854,6 +1864,38 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, upd
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+/**
+ * Returns true when a user note contains language indicating the user wants
+ * a replacement statement rather than a challenge assessment.
+ *
+ * Examples that map to refine/replace intent:
+ *   "what's the better answer to the prompt?"
+ *   "rewrite this", "replace this", "fix this"
+ *   "answer the prompt", "make this usable", "give me a better version"
+ *
+ * When this returns true, `handleRegenNode` uses operation:'refine' so the
+ * bridge produces a replacement statement instead of challenge output.
+ */
+function hasRefineIntent(userNote) {
+  if (!userNote || typeof userNote !== 'string') return false
+  const note = userNote.toLowerCase()
+  return (
+    (note.includes('what') && (note.includes('better') || note.includes('answer'))) ||
+    /\brewrite\b/.test(note) ||
+    /\breplace\b/.test(note) ||
+    note.includes('fix this') ||
+    note.includes('answer the prompt') ||
+    note.includes('make this usable') ||
+    note.includes('make this better') ||
+    note.includes('provide a better') ||
+    note.includes('give me a better') ||
+    note.includes('give me the better') ||
+    note.includes('turn this into') ||
+    note.includes('update this') ||
+    note.includes('improve this')
+  )
+}
 
 function extractCompleteJsonObjects(arrayText) {
   const objects = []
