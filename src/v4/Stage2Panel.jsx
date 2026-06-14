@@ -1,5 +1,11 @@
 import React, { useState } from 'react'
-import { computePivotRecommendations, recommendTargetNodes } from '../v4utils'
+import {
+  computePivotRecommendations, recommendTargetNodes,
+  buildS2EvidenceCitations, buildS2ItemCitations,
+  buildCitationRefs, buildInlineCitationSegments,
+  buildStage2ReviewEvent,
+} from '../v4utils'
+import CitationMarker from './CitationMarker'
 
 // ── Section wrapper with collapse toggle ──────────────────────────────────────
 function Section({ title, icon, count, children, defaultOpen = true, accentColor }) {
@@ -101,12 +107,22 @@ export default function Stage2Panel({
   onAcceptPivotUpdate, onRefinePivotUpdate, onRejectPivotUpdate,
   onRerunStage2,
   hasStage3, onRunStage3, onViewStage3,
-  // Severity-aware stale banner props — present only when stage1Snapshot exists
-  stage1ChangeSeverity,  // 'cosmetic'|'minor_clarification'|'substantive_refinement'|'material_reframing'|'major_basis_change'|null
-  onReconcileStage2,     // () => void — triggers targeted reconcile generation
-  onUpdateBasisOnly,     // () => void — marks Stage 2 current with no LLM call (cosmetic only)
+  stage1ChangeSeverity,
+  onReconcileStage2,
+  onUpdateBasisOnly,
+  // Stage 2 item-level refine/challenge
+  onS2Generate,    // async (sectionLabel, op, text) => { proposedText, assessment, citations }
+  onS2ItemAccept,  // (itemKey, reviewEvent, acceptedText) => void
 }) {
   const stage1Nodes = session.stage1?.nodes || []
+
+  // Shared context threaded to every section renderer and EvidenceBearingItem
+  const s2Ctx = {
+    s2ReviewMap: stage2.s2ReviewMap || {},
+    onGenerate:  onS2Generate  || (() => Promise.resolve({ proposedText: '', assessment: '', citations: [] })),
+    onAccept:    onS2ItemAccept || (() => {}),
+    stage1Nodes,
+  }
 
   return (
     <div style={{ maxWidth: 720, padding: 16 }}>
@@ -151,7 +167,7 @@ export default function Stage2Panel({
       {/* 1 — Summary */}
       {stage2.summary && (
         <Section title="Stage 2 summary" icon="ti-chart-bar" accentColor="var(--accent)">
-          <SummarySection summary={stage2.summary} />
+          <SummarySection summary={stage2.summary} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -163,7 +179,7 @@ export default function Stage2Panel({
           count={stage2.evidenceConsolidation.length}
           accentColor="var(--accent)"
         >
-          <EvidenceSection items={stage2.evidenceConsolidation} stage1Nodes={stage1Nodes} />
+          <EvidenceSection items={stage2.evidenceConsolidation} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -175,7 +191,7 @@ export default function Stage2Panel({
           count={stage2.competitorMap.length}
           accentColor="var(--a4)"
         >
-          <CompetitorSection items={stage2.competitorMap} />
+          <CompetitorSection items={stage2.competitorMap} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -188,7 +204,7 @@ export default function Stage2Panel({
           accentColor="var(--a2)"
           defaultOpen={false}
         >
-          <EntrantsSection items={stage2.emergingEntrants} stage1Nodes={stage1Nodes} />
+          <EntrantsSection items={stage2.emergingEntrants} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -201,7 +217,7 @@ export default function Stage2Panel({
           accentColor="var(--a2)"
           defaultOpen={false}
         >
-          <AdjacencySection items={stage2.adjacencyOpportunities} stage1Nodes={stage1Nodes} />
+          <AdjacencySection items={stage2.adjacencyOpportunities} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -215,9 +231,9 @@ export default function Stage2Panel({
         >
           <RefinedAssertionsSection
             items={stage2.refinedAssertions}
-            stage1Nodes={stage1Nodes}
             onAccept={onAcceptRefinement}
             onReject={onRejectRefinement}
+            s2Ctx={s2Ctx}
           />
         </Section>
       )}
@@ -230,7 +246,7 @@ export default function Stage2Panel({
           count={stage2.contradictionMap.length}
           accentColor="#fb923c"
         >
-          <ContradictionSection items={stage2.contradictionMap} stage1Nodes={stage1Nodes} />
+          <ContradictionSection items={stage2.contradictionMap} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -243,7 +259,7 @@ export default function Stage2Panel({
           accentColor="var(--muted)"
           defaultOpen={false}
         >
-          <UnresolvedSection items={stage2.unresolvedQuestions} />
+          <UnresolvedSection items={stage2.unresolvedQuestions} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -254,7 +270,7 @@ export default function Stage2Panel({
           icon="ti-arrow-right-circle"
           accentColor="var(--accent)"
         >
-          <Stage3ReadinessSection data={stage2.stage3ReadinessSummary} />
+          <Stage3ReadinessSection data={stage2.stage3ReadinessSummary} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -267,7 +283,7 @@ export default function Stage2Panel({
           accentColor="var(--muted)"
           defaultOpen={false}
         >
-          <NextActionsSection items={stage2.recommendedNextActions} />
+          <NextActionsSection items={stage2.recommendedNextActions} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -283,6 +299,7 @@ export default function Stage2Panel({
       <PivotLauncher
         session={session}
         stage2={stage2}
+        s2Ctx={s2Ctx}
         onRunPivot={onRunPivot}
         onAcceptPivotUpdate={onAcceptPivotUpdate}
         onRefinePivotUpdate={onRefinePivotUpdate}
@@ -302,14 +319,294 @@ export default function Stage2Panel({
 
 // ── Section renderers ──────────────────────────────────────────────────────────
 
-function SummarySection({ summary }) {
+// renderCitedText — renders text with inline CitationMarker for any text+citations pair.
+// Returns a plain string when citations is empty so callers don't need to branch.
+function renderCitedText(text, citations) {
+  if (!text) return null
+  if (!citations || citations.length === 0) return text
+  const refs    = buildCitationRefs(citations)
+  const byId    = Object.fromEntries(citations.map(c => [c.id, c]))
+  const segs    = buildInlineCitationSegments(text, refs, citations)
+  return segs.map((seg, i) => {
+    if ('markers' in seg) {
+      return seg.markers.map(m => {
+        const ref  = refs.find(r => r.marker === m)
+        const cite = ref ? byId[ref.citationId] : null
+        return <CitationMarker key={`${i}_${m}`} marker={m} citation={cite} />
+      })
+    }
+    return <React.Fragment key={`t${i}`}>{seg.text}</React.Fragment>
+  })
+}
+
+// ── EvidenceBearingItem ────────────────────────────────────────────────────────
+//
+// One component applied across every eligible Stage 2 section.
+// Provides: inline citation markers, hover tooltip, expandable source panel,
+// inherited source-node lineage, Refine / Challenge controls, revision preview
+// with inline citations before accept, Accept / Reject, durable review history.
+//
+// Usage:
+//   Text item (no children):  renders `text` with inline markers
+//   Complex item (children):  renders children as structured display + adds controls
+//   `text` is always used for the prompt and for the original in the preview.
+function EvidenceBearingItem({
+  itemKey, sectionLabel, text,
+  citations = [], sourceNodeIds = [],
+  s2Ctx = {}, children,
+}) {
+  const { s2ReviewMap = {}, onGenerate, onAccept, stage1Nodes = [] } = s2Ctx
+  const entry       = s2ReviewMap[itemKey]
+  const acceptedText = entry?.acceptedText || null
+
+  const [mode,      setMode]      = useState('idle')  // 'idle'|'generating'|'preview'|'error'
+  const [proposal,  setProposal]  = useState(null)
+  const [activeOp,  setActiveOp]  = useState(null)
+  const [errMsg,    setErrMsg]    = useState(null)
+  const [direction, setDirection] = useState('')
+
+  async function handleGenerate(op) {
+    if (!text) return
+    setActiveOp(op)
+    setMode('generating')
+    setErrMsg(null)
+    const capturedDirection = direction  // snapshot before any async gap
+    try {
+      const result = await onGenerate(sectionLabel, op, text, capturedDirection)
+      setProposal({ ...result, userDirection: capturedDirection || null })
+      setMode('preview')
+    } catch (e) {
+      setErrMsg(e?.message || 'Generation failed')
+      setMode('error')
+    }
+  }
+
+  function handleAccept() {
+    const cites = proposal?.citations || []
+    const reviewEvent = buildStage2ReviewEvent({
+      targetId:        itemKey,
+      targetSection:   sectionLabel,
+      operation:       activeOp,
+      outcome:         'accepted',
+      originalText:    text,
+      replacementText: proposal?.proposedText || null,
+      citations:       cites,
+    })
+    reviewEvent.userDirection = proposal?.userDirection ?? null
+    onAccept(itemKey, reviewEvent, proposal?.proposedText || null)
+    setMode('idle')
+    setProposal(null)
+    setDirection('')
+  }
+
+  function handleReject() {
+    setMode('idle')
+    setProposal(null)
+    setDirection('')
+  }
+
+  return (
+    <div>
+      {/* ── Structured (children) or text with markers ── */}
+      {children
+        ? children
+        : text && (
+            <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65, marginBottom: 4 }}>
+              {acceptedText
+                ? renderCitedText(acceptedText, entry?.latestReview?.citations || citations)
+                : renderCitedText(text, citations)}
+            </div>
+          )
+      }
+
+      {/* ── Accepted overlay for complex items (children present) ── */}
+      {acceptedText && children && (
+        <div style={{
+          marginTop: 6, padding: '6px 8px', borderRadius: 5,
+          background: 'rgba(0,229,180,.04)', border: '1px solid rgba(0,229,180,.2)',
+        }}>
+          <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', display: 'block', marginBottom: 2 }}>
+            revised{entry?.latestReview?.createdAt ? ` · ${new Date(entry.latestReview.createdAt).toLocaleTimeString()}` : ''}
+          </span>
+          <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65 }}>
+            {renderCitedText(acceptedText, entry?.latestReview?.citations || [])}
+          </div>
+        </div>
+      )}
+
+      {/* ── Review timestamp for text-only items (no children) ── */}
+      {acceptedText && !children && entry?.latestReview && (
+        <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', marginBottom: 4 }}>
+          <i className="ti ti-check" style={{ fontSize: 9 }} />{' '}
+          revised · {new Date(entry.latestReview.createdAt).toLocaleTimeString()}
+        </div>
+      )}
+
+      {/* ── Expandable citations source panel ── */}
+      {citations.length > 0 && <EvidenceCitationPanel citations={citations} />}
+
+      {/* ── Source-node lineage (no external citations, but nodeIds exist) ── */}
+      {citations.length === 0 && sourceNodeIds.length > 0 && (
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 5, alignItems: 'center' }}>
+          <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)' }}>Source nodes:</span>
+          {sourceNodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={stage1Nodes} />)}
+        </div>
+      )}
+
+      {/* ── Idle: optional direction + Refine / Challenge ── */}
+      {mode === 'idle' && (
+        <div style={{ marginTop: 7 }}>
+          <input
+            type="text"
+            value={direction}
+            onChange={e => setDirection(e.target.value)}
+            placeholder="Refinement note (optional)…"
+            style={{
+              display: 'block', width: '100%', boxSizing: 'border-box',
+              fontSize: 10, fontFamily: 'inherit', color: 'var(--text)',
+              background: 'var(--s2)', border: '1px solid var(--border)',
+              borderRadius: 4, padding: '3px 8px', outline: 'none',
+              marginBottom: 5,
+            }}
+          />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={() => handleGenerate('refine')}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px', borderRadius: 4,
+                cursor: 'pointer', background: 'rgba(56,189,248,.06)',
+                border: '1px solid rgba(56,189,248,.2)', color: 'var(--a4)',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <i className="ti ti-sparkles" style={{ fontSize: 9 }} /> Refine
+            </button>
+            <button
+              onClick={() => handleGenerate('challenge')}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px', borderRadius: 4,
+                cursor: 'pointer', background: 'transparent',
+                border: '1px solid var(--border)', color: 'var(--muted)',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <i className="ti ti-bolt" style={{ fontSize: 9 }} /> Challenge
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Generating ── */}
+      {mode === 'generating' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 5, marginTop: 7,
+          fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)',
+        }}>
+          <i className="ti ti-loader" style={{ fontSize: 9 }} />
+          {activeOp === 'refine' ? 'Refining...' : 'Challenging...'}
+        </div>
+      )}
+
+      {/* ── Error ── */}
+      {mode === 'error' && (
+        <div style={{ marginTop: 7 }}>
+          <div style={{ fontSize: 9, color: '#f87171', marginBottom: 4 }}>{errMsg}</div>
+          <button
+            onClick={() => setMode('idle')}
+            style={{
+              fontSize: 9, fontFamily: 'var(--fm)', padding: '2px 8px', borderRadius: 3,
+              cursor: 'pointer', background: 'transparent',
+              border: '1px solid var(--border)', color: 'var(--muted)',
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* ── Preview: proposed text + inline citations + Accept / Reject ── */}
+      {mode === 'preview' && proposal && (
+        <div style={{
+          marginTop: 8, padding: '8px 10px', borderRadius: 5,
+          background: 'var(--s2)', border: '1px solid var(--border)',
+        }}>
+          <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a4)', marginBottom: 6 }}>
+            {activeOp === 'refine' ? 'Refined version' : 'Challenge result'} — preview
+            {direction && (
+              <span style={{ color: 'var(--muted)', marginLeft: 5 }}>
+                · directed: &ldquo;{direction}&rdquo;
+              </span>
+            )}
+          </div>
+
+          {/* Original */}
+          <div style={{
+            fontSize: 9, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 6,
+            padding: '4px 6px', background: 'rgba(249,115,22,.04)',
+            borderRadius: 4, border: '1px solid rgba(249,115,22,.15)',
+          }}>
+            <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a3)', display: 'block', marginBottom: 1 }}>
+              original:
+            </span>
+            {text}
+          </div>
+
+          {/* Proposed text — inline citation markers visible before accept */}
+          {proposal.proposedText && (
+            <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 5 }}>
+              {renderCitedText(proposal.proposedText, proposal.citations || [])}
+            </div>
+          )}
+
+          {/* Assessment */}
+          {proposal.assessment && (
+            <div style={{ fontSize: 10, color: 'var(--muted2)', fontStyle: 'italic', marginBottom: 6 }}>
+              <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> {proposal.assessment}
+            </div>
+          )}
+
+          {/* Source panel for proposal citations */}
+          {(proposal.citations || []).length > 0 && (
+            <EvidenceCitationPanel citations={proposal.citations} />
+          )}
+
+          {/* Accept / Reject */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+            <button
+              onClick={handleAccept}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
+                border: '1px solid rgba(0,229,180,.3)', background: 'rgba(0,229,180,.08)', color: 'var(--accent)',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <i className="ti ti-check" style={{ fontSize: 9 }} /> Accept
+            </button>
+            <button
+              onClick={handleReject}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
+                border: '1px solid rgba(248,113,113,.25)', background: 'transparent', color: '#f87171',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <i className="ti ti-x" style={{ fontSize: 9 }} /> Reject
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SummarySection({ summary, s2Ctx }) {
   if (!summary) return null
   const fields = [
-    { key: 'whatChanged',       label: 'What changed',          color: 'var(--accent)' },
-    { key: 'strongestEvidence', label: 'Strongest evidence',    color: 'var(--accent)' },
-    { key: 'weakestAreas',      label: 'Weakest areas',         color: '#fb923c' },
-    { key: 'dominantTensions',  label: 'Dominant tensions',     color: '#fb923c' },
-    { key: 'likelyDirection',   label: 'Likely direction',      color: 'var(--a4)' },
+    { key: 'whatChanged',       label: 'What changed',       color: 'var(--accent)' },
+    { key: 'strongestEvidence', label: 'Strongest evidence', color: 'var(--accent)' },
+    { key: 'weakestAreas',      label: 'Weakest areas',      color: '#fb923c' },
+    { key: 'dominantTensions',  label: 'Dominant tensions',  color: '#fb923c' },
+    { key: 'likelyDirection',   label: 'Likely direction',   color: 'var(--a4)' },
   ]
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -323,8 +620,15 @@ function SummarySection({ summary }) {
           }}>
             {f.label}
           </div>
-          <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65 }}>
-            {summary[f.key]}
+          <div style={{ flex: 1 }}>
+            <EvidenceBearingItem
+              itemKey={`sum:${f.key}`}
+              sectionLabel="Stage 2 summary"
+              text={summary[f.key]}
+              citations={[]}
+              sourceNodeIds={[]}
+              s2Ctx={s2Ctx}
+            />
           </div>
         </div>
       ) : null)}
@@ -332,153 +636,221 @@ function SummarySection({ summary }) {
   )
 }
 
-function EvidenceSection({ items, stage1Nodes }) {
+function EvidenceCitationPanel({ citations }) {
+  const [open, setOpen] = useState(false)
+  if (citations.length === 0) return null
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {items.map((item, i) => (
-        <div key={i} style={{
-          padding: 10, borderRadius: 6,
-          background: 'var(--s2)', border: '1px solid var(--border)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
-            <NodeRef nodeId={item.nodeId} nodes={stage1Nodes} />
-            <RelBadge rel={item.relationship} />
-          </div>
-          <div style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 7, fontStyle: 'italic' }}>
-            "{item.nodeStatement}"
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65, marginBottom: 8 }}>
-            {item.evidenceSummary}
-          </div>
-          {item.sources?.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-              {item.sources.map((src, j) => (
-                <div key={j} style={{
-                  fontSize: 10, padding: '6px 8px',
-                  background: 'var(--surface)', border: '1px solid var(--border)',
-                  borderRadius: 5,
+    <div style={{ marginTop: 6 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 8px',
+          border: '1px solid var(--border2)', borderRadius: 4, cursor: 'pointer',
+          background: 'transparent', color: 'var(--muted)',
+          display: 'flex', alignItems: 'center', gap: 4,
+        }}
+      >
+        <i className={`ti ti-${open ? 'chevron-up' : 'chevron-down'}`} style={{ fontSize: 9 }} />
+        {open ? 'Hide' : 'View'} {citations.length} source{citations.length !== 1 ? 's' : ''}
+      </button>
+      {open && (
+        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {citations.map((c, i) => (
+            <div key={c.id} style={{
+              fontSize: 10, padding: '6px 8px',
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 5, display: 'flex', flexDirection: 'column', gap: 3,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)',
+                  background: 'rgba(0,229,180,.1)', padding: '1px 4px', borderRadius: 3, flexShrink: 0,
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexWrap: 'wrap' }}>
-                    <a href={src.url} target="_blank" rel="noopener noreferrer"
+                  [{i + 1}]
+                </span>
+                {c.url
+                  ? <a href={c.url} target="_blank" rel="noopener noreferrer"
                       style={{ color: 'var(--a4)', fontSize: 10, fontWeight: 500, textDecoration: 'none' }}
-                    >
-                      {src.title}
-                    </a>
-                    <RelBadge rel={src.relationship} />
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.55, fontStyle: 'italic' }}>
-                    "{src.snippet}"
-                  </div>
+                    >{c.title || c.url}</a>
+                  : <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text)' }}>{c.title}</span>
+                }
+                {c.domain && (
+                  <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)' }}>{c.domain}</span>
+                )}
+                <RelBadge rel={c.supportsClaim === 'direct' ? 'supports' : c.supportsClaim === false ? 'contradicts' : 'qualifies'} />
+              </div>
+              {c.snippet && (
+                <div style={{ fontSize: 9, color: 'var(--muted)', lineHeight: 1.5, fontStyle: 'italic' }}>
+                  "{c.snippet}"
                 </div>
-              ))}
+              )}
             </div>
-          )}
+          ))}
         </div>
-      ))}
+      )}
     </div>
   )
 }
 
-function CompetitorSection({ items }) {
+function EvidenceSection({ items, s2Ctx }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {items.map((item, i) => {
+        const cites = buildS2ItemCitations(item, s2Ctx.stage1Nodes)
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+            <EvidenceBearingItem
+              itemKey={`ec:${item.nodeId}`}
+              sectionLabel="Evidence consolidation"
+              text={item.evidenceSummary}
+              citations={cites}
+              sourceNodeIds={item.nodeId ? [item.nodeId] : []}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                <NodeRef nodeId={item.nodeId} nodes={s2Ctx.stage1Nodes} />
+                <RelBadge rel={item.relationship} />
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 7, fontStyle: 'italic' }}>
+                "{item.nodeStatement}"
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65, marginBottom: cites.length ? 4 : 8 }}>
+                {renderCitedText(item.evidenceSummary, cites)}
+              </div>
+            </EvidenceBearingItem>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function CompetitorSection({ items, s2Ctx }) {
   const typeColor = t => t === 'mature' ? '#fb923c' : t === 'differentiated' ? 'var(--a2)' : 'var(--a4)'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {items.map((c, i) => (
-        <div key={i} style={{
-          padding: 10, borderRadius: 6,
-          background: 'var(--s2)', border: '1px solid var(--border)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600 }}>{c.name}</span>
-            <span style={{
-              fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-              color: typeColor(c.type), background: `${typeColor(c.type)}14`,
-              border: `1px solid ${typeColor(c.type)}30`,
-            }}>
-              {c.type}
-            </span>
-          </div>
-          {[
-            { label: 'Segment fit',          value: c.segmentFit },
-            { label: 'Capability gaps',       value: c.capabilityGaps },
-            { label: 'Strategic divergence',  value: c.strategicDivergence },
-            { label: 'Implications',          value: c.implications },
-          ].map(row => row.value ? (
-            <div key={row.label} style={{ marginBottom: 6 }}>
-              <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 2 }}>
-                {row.label}
+      {items.map((c, i) => {
+        const primaryText = c.implications || c.strategicDivergence || c.segmentFit || ''
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+            <EvidenceBearingItem
+              itemKey={`comp:${i}`}
+              sectionLabel="Competitor maturity map"
+              text={primaryText}
+              citations={[]}
+              sourceNodeIds={[]}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{c.name}</span>
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+                  color: typeColor(c.type), background: `${typeColor(c.type)}14`,
+                  border: `1px solid ${typeColor(c.type)}30`,
+                }}>
+                  {c.type}
+                </span>
               </div>
-              <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>{row.value}</div>
-            </div>
-          ) : null)}
-        </div>
-      ))}
+              {[
+                { label: 'Segment fit',         value: c.segmentFit },
+                { label: 'Capability gaps',      value: c.capabilityGaps },
+                { label: 'Strategic divergence', value: c.strategicDivergence },
+                { label: 'Implications',         value: c.implications },
+              ].map(row => row.value ? (
+                <div key={row.label} style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 2 }}>
+                    {row.label}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>{row.value}</div>
+                </div>
+              ) : null)}
+            </EvidenceBearingItem>
+          </div>
+        )
+      })}
     </div>
   )
 }
 
-function EntrantsSection({ items, stage1Nodes }) {
+function EntrantsSection({ items, s2Ctx }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {items.map((e, i) => (
-        <div key={i} style={{
-          padding: 10, borderRadius: 6,
-          background: 'var(--s2)', border: '1px solid var(--border)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 600 }}>{e.name}</span>
-            {e.relevantTo && e.relevantTo !== 'open_question' && (
-              <NodeRef nodeId={e.relevantTo} nodes={stage1Nodes} />
-            )}
+      {items.map((e, i) => {
+        const nodeIds = e.relevantTo && e.relevantTo !== 'open_question' ? [e.relevantTo] : []
+        const cites   = buildS2ItemCitations({ relevantTo: e.relevantTo }, s2Ctx.stage1Nodes)
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+            <EvidenceBearingItem
+              itemKey={`ent:${i}`}
+              sectionLabel="Emerging entrants"
+              text={e.strategicImplication || e.capability || ''}
+              citations={cites}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, fontWeight: 600 }}>{e.name}</span>
+                {nodeIds.length > 0 && <NodeRef nodeId={e.relevantTo} nodes={s2Ctx.stage1Nodes} />}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6, marginBottom: 5 }}>
+                <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginRight: 4 }}>Capability:</span>
+                {e.capability}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>
+                <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: '#fb923c', marginRight: 4 }}>Implication:</span>
+                {e.strategicImplication}
+              </div>
+            </EvidenceBearingItem>
           </div>
-          <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6, marginBottom: 5 }}>
-            <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginRight: 4 }}>Capability:</span>
-            {e.capability}
-          </div>
-          <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>
-            <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: '#fb923c', marginRight: 4 }}>Implication:</span>
-            {e.strategicImplication}
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
-function AdjacencySection({ items, stage1Nodes }) {
+function AdjacencySection({ items, s2Ctx }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {items.map((a, i) => (
-        <div key={i} style={{
-          padding: 10, borderRadius: 6,
-          background: 'var(--s2)', border: '1px solid var(--border)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 600 }}>{a.area}</span>
-            {(a.connectedNodeIds || []).map(id => (
-              <NodeRef key={id} nodeId={id} nodes={stage1Nodes} />
-            ))}
-          </div>
-          {[
-            { label: 'Partnership logic', value: a.partnershipLogic },
-            { label: 'Acquisition logic', value: a.acquisitionLogic },
-            { label: 'Build vs buy',      value: a.buildVsBuy },
-            { label: 'Risks',             value: a.risks },
-          ].map(row => row.value ? (
-            <div key={row.label} style={{ marginBottom: 6 }}>
-              <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 2 }}>
-                {row.label}
+      {items.map((a, i) => {
+        const nodeIds = a.connectedNodeIds || []
+        const cites   = buildS2ItemCitations({ connectedNodeIds: nodeIds }, s2Ctx.stage1Nodes)
+        const primaryText = a.partnershipLogic || a.acquisitionLogic || a.buildVsBuy || ''
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+            <EvidenceBearingItem
+              itemKey={`adj:${i}`}
+              sectionLabel="Adjacency & acquisition opportunities"
+              text={primaryText}
+              citations={cites}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, fontWeight: 600 }}>{a.area}</span>
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
               </div>
-              <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>{row.value}</div>
-            </div>
-          ) : null)}
-        </div>
-      ))}
+              {[
+                { label: 'Partnership logic', value: a.partnershipLogic },
+                { label: 'Acquisition logic', value: a.acquisitionLogic },
+                { label: 'Build vs buy',      value: a.buildVsBuy },
+                { label: 'Risks',             value: a.risks },
+              ].map(row => row.value ? (
+                <div key={row.label} style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 2 }}>
+                    {row.label}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>{row.value}</div>
+                </div>
+              ) : null)}
+            </EvidenceBearingItem>
+          </div>
+        )
+      })}
     </div>
   )
 }
 
-function RefinedAssertionsSection({ items, stage1Nodes, onAccept, onReject }) {
+function RefinedAssertionsSection({ items, onAccept, onReject, s2Ctx }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted)', marginBottom: 2 }}>
@@ -486,6 +858,7 @@ function RefinedAssertionsSection({ items, stage1Nodes, onAccept, onReject }) {
       </div>
       {items.map((r, i) => {
         const status = r.userStatus || 'pending'
+        const cites  = buildS2ItemCitations({ nodeId: r.nodeId }, s2Ctx.stage1Nodes)
         return (
           <div key={i} style={{
             padding: 10, borderRadius: 6,
@@ -494,75 +867,96 @@ function RefinedAssertionsSection({ items, stage1Nodes, onAccept, onReject }) {
             border: `1px solid ${status === 'accepted' ? 'rgba(0,229,180,.25)' :
                                   status === 'rejected'  ? 'rgba(248,113,113,.2)' : 'var(--border)'}`,
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7, flexWrap: 'wrap' }}>
-              <NodeRef nodeId={r.nodeId} nodes={stage1Nodes} />
-              <RefinementBadge type={r.refinementType} />
-              {r.confidenceChange !== 'unchanged' && (
-                <span style={{
-                  fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-                  color: r.confidenceChange === 'increased' ? 'var(--accent)' : '#f87171',
-                  background: r.confidenceChange === 'increased' ? 'rgba(0,229,180,.1)' : 'rgba(248,113,113,.08)',
+            <EvidenceBearingItem
+              itemKey={`ref:${r.nodeId}`}
+              sectionLabel="Refined assertions"
+              text={r.revisedStatement}
+              citations={cites}
+              sourceNodeIds={r.nodeId ? [r.nodeId] : []}
+              s2Ctx={s2Ctx}
+            >
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7, flexWrap: 'wrap' }}>
+                <NodeRef nodeId={r.nodeId} nodes={s2Ctx.stage1Nodes} />
+                <RefinementBadge type={r.refinementType} />
+                {r.confidenceChange !== 'unchanged' && (
+                  <span style={{
+                    fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+                    color: r.confidenceChange === 'increased' ? 'var(--accent)' : '#f87171',
+                    background: r.confidenceChange === 'increased' ? 'rgba(0,229,180,.1)' : 'rgba(248,113,113,.08)',
+                  }}>
+                    confidence {r.confidenceChange}
+                  </span>
+                )}
+              </div>
+
+              {/* Original statement */}
+              {r.originalStatement && (
+                <div style={{
+                  fontSize: 10, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 6,
+                  padding: '5px 8px', background: 'rgba(249,115,22,.04)',
+                  border: '1px solid rgba(249,115,22,.15)', borderRadius: 5,
                 }}>
-                  confidence {r.confidenceChange}
-                </span>
+                  <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a3)', display: 'block', marginBottom: 2 }}>original:</span>
+                  {r.originalStatement}
+                </div>
               )}
-            </div>
 
-            {r.originalStatement && (
-              <div style={{
-                fontSize: 10, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 6,
-                padding: '5px 8px', background: 'rgba(249,115,22,.04)',
-                border: '1px solid rgba(249,115,22,.15)', borderRadius: 5,
-              }}>
-                <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a3)', display: 'block', marginBottom: 2 }}>original:</span>
-                {r.originalStatement}
+              {/* Revised statement */}
+              <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 6 }}>
+                {r.revisedStatement}
               </div>
-            )}
 
-            <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 6 }}>
-              {r.revisedStatement}
-            </div>
+              {/* Reason */}
+              {r.reason && (
+                <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', fontStyle: 'italic', marginBottom: 8 }}>
+                  <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> {r.reason}
+                </div>
+              )}
 
-            {r.reason && (
-              <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', fontStyle: 'italic', marginBottom: 8 }}>
-                <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> {r.reason}
-              </div>
-            )}
-
-            {status === 'pending' && (
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  onClick={() => onAccept(r.nodeId)}
-                  style={{
-                    fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px',
-                    border: '1px solid rgba(0,229,180,.3)', borderRadius: 5, cursor: 'pointer',
-                    background: 'rgba(0,229,180,.08)', color: 'var(--accent)',
-                    display: 'flex', alignItems: 'center', gap: 3,
-                  }}
-                >
-                  <i className="ti ti-check" style={{ fontSize: 9 }} /> Accept proposal
-                </button>
-                <button
-                  onClick={() => onReject(r.nodeId)}
-                  style={{
-                    fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px',
-                    border: '1px solid rgba(248,113,113,.25)', borderRadius: 5, cursor: 'pointer',
-                    background: 'transparent', color: '#f87171',
-                    display: 'flex', alignItems: 'center', gap: 3,
-                  }}
-                >
-                  <i className="ti ti-x" style={{ fontSize: 9 }} /> Reject
-                </button>
-              </div>
-            )}
-            {status !== 'pending' && (
-              <div style={{
-                fontSize: 9, fontFamily: 'var(--fm)',
-                color: status === 'accepted' ? 'var(--accent)' : '#f87171',
-              }}>
-                <i className={`ti ti-${status === 'accepted' ? 'check' : 'x'}`} style={{ fontSize: 9 }} /> {status}
-              </div>
-            )}
+              {/* Accept proposal / Reject (existing proposal controls) */}
+              {status === 'pending' && (
+                <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+                  <button
+                    onClick={() => onAccept(r.nodeId)}
+                    style={{
+                      fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px',
+                      border: '1px solid rgba(0,229,180,.3)', borderRadius: 5, cursor: 'pointer',
+                      background: 'rgba(0,229,180,.08)', color: 'var(--accent)',
+                      display: 'flex', alignItems: 'center', gap: 3,
+                    }}
+                  >
+                    <i className="ti ti-check" style={{ fontSize: 9 }} /> Accept proposal
+                  </button>
+                  <button
+                    onClick={() => onReject(r.nodeId)}
+                    style={{
+                      fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px',
+                      border: '1px solid rgba(248,113,113,.25)', borderRadius: 5, cursor: 'pointer',
+                      background: 'transparent', color: '#f87171',
+                      display: 'flex', alignItems: 'center', gap: 3,
+                    }}
+                  >
+                    <i className="ti ti-x" style={{ fontSize: 9 }} /> Reject
+                  </button>
+                </div>
+              )}
+              {status !== 'pending' && (
+                <div style={{
+                  fontSize: 9, fontFamily: 'var(--fm)',
+                  color: status === 'accepted' ? 'var(--accent)' : '#f87171',
+                  display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4,
+                }}>
+                  <i className={`ti ti-${status === 'accepted' ? 'check' : 'x'}`} style={{ fontSize: 9 }} />
+                  {status}
+                  {r.latestReview?.createdAt && (
+                    <span style={{ color: 'var(--muted)', fontSize: 9 }}>
+                      · {new Date(r.latestReview.createdAt).toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+              )}
+            </EvidenceBearingItem>
           </div>
         )
       })}
@@ -570,65 +964,77 @@ function RefinedAssertionsSection({ items, stage1Nodes, onAccept, onReject }) {
   )
 }
 
-function ContradictionSection({ items, stage1Nodes }) {
+function ContradictionSection({ items, s2Ctx }) {
   const resColor = r => r === 'resolved' ? 'var(--accent)' : r === 'partial' ? 'var(--a3)' : '#fb923c'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: '#fb923c', marginBottom: 2 }}>
         <i className="ti ti-alert-triangle" style={{ fontSize: 10, verticalAlign: -1 }} /> Tensions preserved intentionally — do not force resolution prematurely.
       </div>
-      {items.map((c, i) => (
-        <div key={i} style={{
-          padding: 10, borderRadius: 6,
-          background: 'rgba(251,146,60,.04)', border: '1px solid rgba(251,146,60,.2)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
-            <span style={{
-              fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-              color: 'var(--muted)', background: 'var(--s2)', border: '1px solid var(--border)',
-            }}>
-              {c.tensionType?.replace(/_/g, ' ')}
-            </span>
-            <span style={{
-              fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-              color: resColor(c.resolution), background: `${resColor(c.resolution)}14`,
-            }}>
-              {c.resolution}
-            </span>
-            {(c.nodeIds || []).map(id => (
-              <NodeRef key={id} nodeId={id} nodes={stage1Nodes} />
-            ))}
+      {items.map((c, i) => {
+        const nodeIds = c.nodeIds || []
+        const cites   = buildS2ItemCitations({ nodeIds }, s2Ctx.stage1Nodes)
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'rgba(251,146,60,.04)', border: '1px solid rgba(251,146,60,.2)' }}>
+            <EvidenceBearingItem
+              itemKey={`contra:${i}`}
+              sectionLabel="Contradiction map"
+              text={c.description}
+              citations={cites}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+                  color: 'var(--muted)', background: 'var(--s2)', border: '1px solid var(--border)',
+                }}>
+                  {c.tensionType?.replace(/_/g, ' ')}
+                </span>
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+                  color: resColor(c.resolution), background: `${resColor(c.resolution)}14`,
+                }}>
+                  {c.resolution}
+                </span>
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 5 }}>
+                {c.description}
+              </div>
+              {c.resolutionNote && (
+                <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', fontStyle: 'italic' }}>
+                  {c.resolutionNote}
+                </div>
+              )}
+            </EvidenceBearingItem>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 5 }}>
-            {c.description}
-          </div>
-          {c.resolutionNote && (
-            <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', fontStyle: 'italic' }}>
-              {c.resolutionNote}
-            </div>
-          )}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
-function UnresolvedSection({ items }) {
+function UnresolvedSection({ items, s2Ctx }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
       {items.map((q, i) => (
-        <div key={i} style={{
-          fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65,
-          padding: '6px 10px', borderLeft: '2px solid var(--border2)',
-        }}>
-          {q}
+        <div key={i} style={{ padding: '6px 10px', borderLeft: '2px solid var(--border2)' }}>
+          <EvidenceBearingItem
+            itemKey={`uq:${i}`}
+            sectionLabel="Unresolved questions"
+            text={q}
+            citations={[]}
+            sourceNodeIds={[]}
+            s2Ctx={s2Ctx}
+          />
         </div>
       ))}
     </div>
   )
 }
 
-function Stage3ReadinessSection({ data }) {
+function Stage3ReadinessSection({ data, s2Ctx }) {
   const groups = [
     { key: 'highConfidenceFindings', label: 'High-confidence findings', color: 'var(--accent)' },
     { key: 'strongestThemes',        label: 'Strongest themes',         color: 'var(--accent)' },
@@ -648,11 +1054,15 @@ function Stage3ReadinessSection({ data }) {
             {g.label}
           </div>
           {data[g.key].map((item, i) => (
-            <div key={i} style={{
-              fontSize: 10, color: 'var(--muted2)', lineHeight: 1.65, marginBottom: 3,
-              paddingLeft: 10, borderLeft: `2px solid ${g.color}40`,
-            }}>
-              {item}
+            <div key={i} style={{ marginBottom: 4, paddingLeft: 10, borderLeft: `2px solid ${g.color}40` }}>
+              <EvidenceBearingItem
+                itemKey={`s3r:${g.key}:${i}`}
+                sectionLabel="Stage 3 readiness"
+                text={item}
+                citations={[]}
+                sourceNodeIds={[]}
+                s2Ctx={s2Ctx}
+              />
             </div>
           ))}
         </div>
@@ -661,7 +1071,7 @@ function Stage3ReadinessSection({ data }) {
   )
 }
 
-function NextActionsSection({ items }) {
+function NextActionsSection({ items, s2Ctx }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
       {items.map((a, i) => (
@@ -672,7 +1082,16 @@ function NextActionsSection({ items }) {
           }}>
             {i + 1}.
           </span>
-          <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65 }}>{a}</div>
+          <div style={{ flex: 1 }}>
+            <EvidenceBearingItem
+              itemKey={`act:${i}`}
+              sectionLabel="Recommended next actions"
+              text={a}
+              citations={[]}
+              sourceNodeIds={[]}
+              s2Ctx={s2Ctx}
+            />
+          </div>
         </div>
       ))}
     </div>
@@ -1039,7 +1458,7 @@ function PivotContextSection({ stage2, onAcceptPivotUpdate, onRefinePivotUpdate,
 }
 
 // ── PivotLauncher ──────────────────────────────────────────────────────────────
-function PivotLauncher({ session, stage2, onRunPivot, onAcceptPivotUpdate, onRefinePivotUpdate, onRejectPivotUpdate }) {
+function PivotLauncher({ session, stage2, onRunPivot, onAcceptPivotUpdate, onRefinePivotUpdate, onRejectPivotUpdate, s2Ctx }) {
   const stage1Nodes = session.stage1?.nodes || []
   const recs        = computePivotRecommendations(session)
 
@@ -1143,6 +1562,7 @@ function PivotLauncher({ session, stage2, onRunPivot, onAcceptPivotUpdate, onRef
                 card={card}
                 stage1Nodes={stage1Nodes}
                 pivotResult={pivotResult}
+                s2Ctx={s2Ctx}
                 onToggleSelector={() => toggleSelector(idx)}
                 onUpdateTargets={ids => updateTargets(idx, ids)}
                 onUpdateDirection={val => updateDirection(idx, val)}
@@ -1186,7 +1606,7 @@ function PivotLauncher({ session, stage2, onRunPivot, onAcceptPivotUpdate, onRef
 
 // ── PivotCard ──────────────────────────────────────────────────────────────────
 function PivotCard({
-  card, stage1Nodes, pivotResult,
+  card, stage1Nodes, pivotResult, s2Ctx,
   onToggleSelector, onUpdateTargets, onUpdateDirection,
   onRun, onAcceptUpdate, onRefineUpdate, onRejectUpdate,
 }) {
@@ -1302,6 +1722,7 @@ function PivotCard({
       {isComplete && (
         <PivotResultPanel
           pivot={pivotResult}
+          s2Ctx={s2Ctx}
           onAcceptUpdate={onAcceptUpdate}
           onRefineUpdate={onRefineUpdate}
           onRejectUpdate={onRejectUpdate}
@@ -1312,7 +1733,7 @@ function PivotCard({
 }
 
 // ── PivotResultPanel ───────────────────────────────────────────────────────────
-function PivotResultPanel({ pivot, onAcceptUpdate, onRefineUpdate, onRejectUpdate }) {
+function PivotResultPanel({ pivot, s2Ctx, onAcceptUpdate, onRefineUpdate, onRejectUpdate }) {
   const accepted = (pivot.proposedUpdates || []).filter(u => ['accepted', 'refined'].includes(u.status)).length
   const rejected = (pivot.proposedUpdates || []).filter(u => u.status === 'rejected').length
   const pending  = (pivot.proposedUpdates || []).filter(u => u.status === 'proposed').length
@@ -1328,9 +1749,14 @@ function PivotResultPanel({ pivot, onAcceptUpdate, onRefineUpdate, onRejectUpdat
         <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a2)', marginBottom: 4 }}>
           Pivot finding
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65 }}>
-          {pivot.displaySummary}
-        </div>
+        <EvidenceBearingItem
+          itemKey={`pivot:${pivot.type}`}
+          sectionLabel="Generated pivot outputs"
+          text={pivot.displaySummary}
+          citations={[]}
+          sourceNodeIds={pivot.targetNodeIds || []}
+          s2Ctx={s2Ctx || {}}
+        />
       </div>
 
       {/* Proposed updates */}

@@ -109,6 +109,10 @@ export default function Stage3Panel({
   isGeneratingStrategyMenu,
   onGenerateStage4Artifact,
   onViewStage4,
+  // ResumeBuilder export
+  onExportToResumeBuilder,
+  isExportingToRB,
+  rbExportStatus,
 }) {
   if (!session.stage2) {
     return (
@@ -130,6 +134,24 @@ export default function Stage3Panel({
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
+          {onExportToResumeBuilder && (
+            <button
+              onClick={onExportToResumeBuilder}
+              disabled={isExportingToRB}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '4px 10px',
+                background: isExportingToRB ? 'var(--s2)' : 'rgba(0,229,180,.08)',
+                border: '1px solid rgba(0,229,180,.3)',
+                borderRadius: 5, cursor: isExportingToRB ? 'wait' : 'pointer',
+                color: isExportingToRB ? 'var(--muted)' : 'var(--accent)',
+                display: 'flex', alignItems: 'center', gap: 4,
+                opacity: isExportingToRB ? .6 : 1,
+              }}
+            >
+              <i className={`ti ${isExportingToRB ? 'ti-loader-2' : 'ti-upload'}`} style={{ fontSize: 10 }} />
+              {isExportingToRB ? 'Exporting…' : 'Export to ResumeBuilder'}
+            </button>
+          )}
           <button
             onClick={onRerunStage3}
             style={{
@@ -157,6 +179,9 @@ export default function Stage3Panel({
 
       {/* Stale banner — shown when Stage 2 was re-run after Stage 3 was generated */}
       {isStale && <StaleBanner onRerun={onRerunStage3} />}
+
+      {/* ResumeBuilder export status */}
+      {rbExportStatus && <RBExportStatusBanner status={rbExportStatus} export={stage3.resumeBuilderExport} />}
 
       {/* 1 — Emerging Strategic Thesis */}
       {stage3.thesis && (
@@ -762,6 +787,67 @@ function StaleBanner({ onRerun }) {
       </button>
     </div>
   )
+}
+
+function RBExportStatusBanner({ status, export: exportObj }) {
+  function handleCopy() {
+    if (!exportObj) return
+    try {
+      navigator.clipboard.writeText(JSON.stringify(exportObj, null, 2))
+    } catch (_) {
+      // clipboard not available in all contexts — silently ignore
+    }
+  }
+
+  if (status === 'success') {
+    return (
+      <div style={{
+        padding: '10px 14px',
+        background: 'rgba(0,229,180,.05)',
+        border: '1px solid rgba(0,229,180,.3)',
+        borderRadius: 'var(--r)',
+        marginBottom: 10,
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      }}>
+        <i className="ti ti-check" style={{ fontSize: 13, color: 'var(--accent)', flexShrink: 0 }} />
+        <span style={{ fontSize: 10, color: 'var(--accent)', fontFamily: 'var(--fm)', flex: 1 }}>
+          Exported to ResumeBuilder — saved to this session.
+        </span>
+        {exportObj && (
+          <button
+            onClick={handleCopy}
+            style={{
+              fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 9px', borderRadius: 4,
+              background: 'rgba(0,229,180,.1)', border: '1px solid rgba(0,229,180,.3)',
+              color: 'var(--accent)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+            }}
+          >
+            <i className="ti ti-copy" style={{ fontSize: 9 }} /> Copy JSON
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  if (status?.error) {
+    return (
+      <div style={{
+        padding: '10px 14px',
+        background: 'rgba(248,113,113,.05)',
+        border: '1px solid rgba(248,113,113,.3)',
+        borderRadius: 'var(--r)',
+        marginBottom: 10,
+        display: 'flex', alignItems: 'center', gap: 10,
+      }}>
+        <i className="ti ti-alert-circle" style={{ fontSize: 13, color: '#f87171', flexShrink: 0 }} />
+        <span style={{ fontSize: 10, color: '#f87171', fontFamily: 'var(--fm)' }}>
+          Export failed: {status.error}
+        </span>
+      </div>
+    )
+  }
+
+  return null
 }
 
 function EmptyState({ message }) {

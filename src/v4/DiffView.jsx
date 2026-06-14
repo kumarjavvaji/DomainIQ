@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import { NODE_TYPES } from '../v4schema'
+import { normalizePtCitations, buildCitationRefs, buildInlineCitationSegments } from '../v4utils'
+import CitationMarker from './CitationMarker'
 
 // ─── AssessmentView ───────────────────────────────────────────────────────────
 // Renders the full PressureTestResult.
@@ -192,16 +194,48 @@ function AssessmentBlock({ ptResult }) {
 }
 
 // ─── Revision block (revise_claim only) ──────────────────────────────────────
+//
+// For the challenged node's revised statement, renders inline citation markers
+// using the same normalization + placement logic as the post-apply NodeCard.
+// Marker numbers match the [n] labels in EvidenceSection / EvidenceFootnotes.
 function RevisionBlock({ diff, ptResult }) {
   const { modifiedNodes } = diff
   const { updatedDownstream } = ptResult
   if (!modifiedNodes?.length) return null
 
+  // Build preview citations once — same call path as buildStage1ReviewEvent so
+  // marker numbers are guaranteed to match the applied node card.
+  const previewCitations = normalizePtCitations(ptResult)
+  const previewRefs      = buildCitationRefs(previewCitations)
+  const previewCiteById  = Object.fromEntries(previewCitations.map(c => [c.id, c]))
+  const hasCitations     = previewCitations.length > 0
+
   return (
     <div style={{ marginBottom: 14 }}>
       <SectionLabel icon="ti-pencil" label="Statement changes" />
       {modifiedNodes.map(({ before, after, reason }) => {
-        const nodeType = NODE_TYPES[after.type] || NODE_TYPES.finding
+        const nodeType         = NODE_TYPES[after.type] || NODE_TYPES.finding
+        const isChallengedNode = before.id === ptResult.challengedNodeId
+
+        // Render inline markers only on the challenged node's revised statement.
+        // Downstream nodes changed by the revision render plain text.
+        let revisedContent
+        if (isChallengedNode && hasCitations) {
+          const segments = buildInlineCitationSegments(after.statement, previewRefs, previewCitations)
+          revisedContent = segments.map((seg, i) => {
+            if ('markers' in seg) {
+              return seg.markers.map(m => {
+                const ref  = previewRefs.find(r => r.marker === m)
+                const cite = ref ? previewCiteById[ref.citationId] : null
+                return <CitationMarker key={`${i}_${m}`} marker={m} citation={cite} />
+              })
+            }
+            return <React.Fragment key={`t${i}`}>{seg.text}</React.Fragment>
+          })
+        } else {
+          revisedContent = after.statement
+        }
+
         return (
           <div key={after.id} className="diff-modified" style={{ marginBottom: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
@@ -209,7 +243,7 @@ function RevisionBlock({ diff, ptResult }) {
               <span className={`node-type ${nodeType.cls}`}>
                 <i className={`ti ${nodeType.icon}`} /> {nodeType.label}
               </span>
-              {before.id === ptResult.challengedNodeId && (
+              {isChallengedNode && (
                 <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: '#fb923c' }}>challenged node</span>
               )}
             </div>
@@ -227,7 +261,7 @@ function RevisionBlock({ diff, ptResult }) {
               border: '1px solid rgba(0,229,180,.15)', borderRadius: 5,
             }}>
               <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', display: 'block', marginBottom: 2 }}>revised — more precise</span>
-              {after.statement}
+              {revisedContent}
             </div>
             {reason && (
               <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted)', fontStyle: 'italic' }}>
