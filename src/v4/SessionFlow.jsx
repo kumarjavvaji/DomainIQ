@@ -9,6 +9,8 @@ import Stage4Panel from './Stage4Panel'
 import Stage5Panel from './Stage5Panel'
 import ChallengeModal from './ChallengeModal'
 import { buildStage4SignalsPrompt, MOCK_STAGE4_SIGNALS, generateFallbackSignals } from '../v4stage4signals'
+import { buildDIQStage3Export } from '../diq/stage3/export/buildDIQStage3Export'
+import { validateDIQStage3Export } from '../diq/stage3/export/validateDIQStage3Export'
 import { buildStage5Prompt, MOCK_STAGE5, COMPACT_GENERATION_LIMITS } from '../v4stage5'
 import {
   captureSourceLearningSnapshot,
@@ -40,6 +42,9 @@ import {
   MOCK_STAGE4_ARTIFACT,
   buildStage4ArtifactRefinementPrompt,
   MOCK_STAGE4_ARTIFACT_REFINED,
+  buildS2ItemRefinePrompt,
+  buildS2ItemChallengePrompt,
+  MOCK_S2_ITEM_RESULT,
 } from '../v4prompts'
 import {
   getDirectDeps,
@@ -58,6 +63,8 @@ import {
   classifyStage1ChangeSeverity,
   getReconcileImpactedSections,
   classifyStage2Response,
+  buildStage1ReviewEvent,
+  buildStage2ReviewEvent,
 } from '../v4utils'
 import { callClaude, callClaudeWithSearch } from '../api'
 
@@ -81,6 +88,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   const [isGeneratingStrategyMenu, setIsGeneratingStrategyMenu]   = useState(false)
   const [isGeneratingSignals,      setIsGeneratingSignals]        = useState(false)
   const [isGeneratingStage5,       setIsGeneratingStage5]         = useState(false)
+  const [isExportingToRB,          setIsExportingToRB]            = useState(false)
+  const [rbExportStatus,           setRBExportStatus]             = useState(null)
 
   // Persist whenever session changes
   useEffect(() => {
@@ -260,9 +269,10 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       }
 
       const newDiff = computeDiff(nodes, ptResult)
-      // Attach full ptResult + raw search evidence to the diff object
+      // Attach full ptResult + raw search evidence + mode to the diff object
       newDiff._ptResult = ptResult
       newDiff._rawSearchBlocks = rawSearchBlocks
+      newDiff._mode = mode
 
       setDiff(newDiff)
       setStep('inspect')
@@ -297,9 +307,34 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   // ── Apply assessment — three decision paths ───────────────────
   function handleAcceptDiff() {
     if (!diff?._ptResult) return
-    const updatedNodes = applyDiff(session.stage1.nodes, diff._ptResult)
+    const ptResult      = diff._ptResult
+    const nodes         = session.stage1.nodes
+    const challengedNode = nodes.find(n => n.id === ptResult.challengedNodeId)
+
+    // Apply statement/status changes (existing logic)
+    const updatedNodes = applyDiff(nodes, ptResult)
+
+    // Build and persist a review event with normalized citations.
+    // Uses the original statement before any revision is applied.
+    const reviewEvent = buildStage1ReviewEvent(
+      ptResult,
+      challengedNode?.statement || '',
+      'challenge'
+    )
+
+    // Attach reviewHistory + latestReview to the challenged node only.
+    // Prior reviewHistory entries are preserved — never wiped.
+    const nodesWithReview = updatedNodes.map(n => {
+      if (n.id !== ptResult.challengedNodeId) return n
+      return {
+        ...n,
+        reviewHistory: [...(n.reviewHistory || []), reviewEvent],
+        latestReview:  reviewEvent,
+      }
+    })
+
     setSession(prev => {
-      const newStage1 = { ...prev.stage1, nodes: updatedNodes }
+      const newStage1 = { ...prev.stage1, nodes: nodesWithReview }
       return {
         ...prev,
         stage1:          newStage1,
@@ -661,6 +696,31 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       ...prev,
       stage3: { ...prev.stage3, _strategyMenuNeedsRefresh: true },
     }))
+  }
+
+  // ── DIQ Stage 3 → ResumeBuilder export ───────────────────────────────────────
+  function handleExportToResumeBuilder() {
+    if (!session.stage3 || isExportingToRB) return
+    setIsExportingToRB(true)
+    setRBExportStatus(null)
+    try {
+      const exportObj = buildDIQStage3Export(session)
+      const { valid, errors } = validateDIQStage3Export(exportObj)
+      if (!valid) {
+        setRBExportStatus({ error: errors[0] || 'Validation failed' })
+        return
+      }
+      const record = { id: 'rb_export_' + Date.now(), createdAt: Date.now(), export: exportObj }
+      setSession(prev => ({
+        ...prev,
+        stage3: { ...prev.stage3, resumeBuilderExport: record },
+      }))
+      setRBExportStatus('success')
+    } catch (e) {
+      setRBExportStatus({ error: e.message || 'Unknown error' })
+    } finally {
+      setIsExportingToRB(false)
+    }
   }
 
   async function handleUpdateStrategyOptions() {
@@ -1194,9 +1254,24 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       ...prev,
       stage2: {
         ...prev.stage2,
-        refinedAssertions: prev.stage2.refinedAssertions.map(r =>
-          r.nodeId === nodeId ? { ...r, userStatus: 'accepted' } : r
-        ),
+        refinedAssertions: prev.stage2.refinedAssertions.map(r => {
+          if (r.nodeId !== nodeId) return r
+          const reviewEvent = buildStage2ReviewEvent({
+            targetId:        nodeId,
+            targetSection:   'refinedAssertions',
+            operation:       'accept',
+            outcome:         'accepted',
+            originalText:    r.originalStatement || null,
+            replacementText: r.revisedStatement  || null,
+            citations:       [],
+          })
+          return {
+            ...r,
+            userStatus:    'accepted',
+            reviewHistory: [...(r.reviewHistory || []), reviewEvent],
+            latestReview:  reviewEvent,
+          }
+        }),
       },
     }))
   }
@@ -1206,11 +1281,64 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       ...prev,
       stage2: {
         ...prev.stage2,
-        refinedAssertions: prev.stage2.refinedAssertions.map(r =>
-          r.nodeId === nodeId ? { ...r, userStatus: 'rejected' } : r
-        ),
+        refinedAssertions: prev.stage2.refinedAssertions.map(r => {
+          if (r.nodeId !== nodeId) return r
+          const reviewEvent = buildStage2ReviewEvent({
+            targetId:      nodeId,
+            targetSection: 'refinedAssertions',
+            operation:     'reject',
+            outcome:       'rejected',
+            originalText:  r.originalStatement || null,
+            citations:     [],
+          })
+          return {
+            ...r,
+            userStatus:    'rejected',
+            reviewHistory: [...(r.reviewHistory || []), reviewEvent],
+            latestReview:  reviewEvent,
+          }
+        }),
       },
     }))
+  }
+
+  // ── Stage 2 item refine/challenge (EvidenceBearingItem controls) ─────────────
+  async function handleS2Generate(sectionLabel, op, text, userDirection) {
+    if (!apiKeySet) {
+      throw new Error('Stage 2 AI refinement unavailable — no API key configured. Set VITE_ANTHROPIC_API_KEY in .env.local.')
+    }
+    const entity = typeof session.entity === 'string' ? session.entity : session.entity?.name || ''
+    const prompt = op === 'refine'
+      ? buildS2ItemRefinePrompt(sectionLabel, text, entity, userDirection)
+      : buildS2ItemChallengePrompt(sectionLabel, text, entity, userDirection)
+    try {
+      const raw    = await callClaude(prompt, 2000)
+      const parsed = JSON.parse(raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim())
+      return { proposedText: parsed.proposedText || '', assessment: parsed.assessment || '', citations: parsed.citations || [] }
+    } catch (e) {
+      throw new Error(e?.message?.startsWith('Stage 2') ? e.message : `Stage 2 generation failed: ${e?.message || 'unexpected error'}`)
+    }
+  }
+
+  function handleS2ItemAccept(itemKey, reviewEvent, acceptedText) {
+    setSession(prev => {
+      const currentMap = prev.stage2?.s2ReviewMap || {}
+      const existing   = currentMap[itemKey] || { reviewHistory: [] }
+      return {
+        ...prev,
+        stage2: {
+          ...prev.stage2,
+          s2ReviewMap: {
+            ...currentMap,
+            [itemKey]: {
+              reviewHistory: [...existing.reviewHistory, reviewEvent],
+              latestReview:  reviewEvent,
+              acceptedText,
+            },
+          },
+        },
+      }
+    })
   }
 
   // ── Run pivot ─────────────────────────────────────────────────
@@ -1551,6 +1679,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             stage1ChangeSeverity={stage1ChangeSeverity}
             onReconcileStage2={() => handleRunStage2Reconcile(stage1Changes, reconcileImpactedSections)}
             onUpdateBasisOnly={handleUpdateBasisOnly}
+            onS2Generate={handleS2Generate}
+            onS2ItemAccept={handleS2ItemAccept}
           />
         )}
 
@@ -1593,6 +1723,9 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             isGeneratingStrategyMenu={isGeneratingStrategyMenu}
             onGenerateStage4Artifact={handleGenerateStage4Artifact}
             onViewStage4={() => setStep('stage4')}
+            onExportToResumeBuilder={handleExportToResumeBuilder}
+            isExportingToRB={isExportingToRB}
+            rbExportStatus={rbExportStatus}
           />
         )}
 

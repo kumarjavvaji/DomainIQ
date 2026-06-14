@@ -615,6 +615,332 @@ export function getReconcileImpactedSections(changes) {
   return ALL_SECTIONS.filter(k => sections.has(k))
 }
 
+// ── Stage 1 citation normalization ────────────────────────────────────────────
+//
+// normalizePtCitations: converts ptResult.retrievedEvidence into Stage1Citation[].
+// De-duplicates by canonical URL. Maps evidence type to a support level label.
+// Returns [] when no evidence is present — never fabricates citations.
+
+function extractUrlDomain(url) {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch (_) { return '' }
+}
+
+function mapEvidenceSupportLevel(type) {
+  if (type === 'direct_evidence')         return 'direct'
+  if (type === 'pattern_inference')       return 'context'
+  if (type === 'competitor_analogy')      return 'context'
+  if (type === 'contradictory_evidence')  return false
+  return 'partial'
+}
+
+export function normalizePtCitations(ptResult) {
+  const evidence = ptResult?.retrievedEvidence || []
+  if (evidence.length === 0) return []
+
+  const seen      = new Set()
+  const citations = []
+
+  for (const e of evidence) {
+    const url       = e.url || ''
+    const canonical = url.toLowerCase().replace(/\/$/, '')
+    if (canonical && seen.has(canonical)) continue
+    if (canonical) seen.add(canonical)
+
+    citations.push({
+      id:           `cite_${e.id || citations.length}`,
+      title:        e.title || '',
+      url,
+      source:       e.publisher || '',
+      domain:       extractUrlDomain(url),
+      publishedAt:  e.publishedAt || null,
+      accessedAt:   new Date().toISOString(),
+      snippet:      e.snippet || '',
+      supportsClaim: mapEvidenceSupportLevel(e.type),
+      confidence:   e.confidence || null,
+    })
+  }
+
+  return citations
+}
+
+// ── Sentence-level citation placement ─────────────────────────────────────────
+//
+// buildInlineCitationSegments: splits a node statement into renderable segments
+// with citation markers placed after the sentence each citation supports.
+//
+// Returns: Array<{ text: string } | { markers: number[] }>
+//
+// Placement priority per ref:
+//   1. ref.sentenceIndex exists and is in range → use it
+//   2. ref.claimText exists AND differs from the full statement → match sentence
+//   3. citation.snippet → keyword match against sentences
+//   4. Fallback: distribute evenly from sentence 0 (never pile at end for multi-sentence)
+
+function splitSentences(text) {
+  if (!text) return []
+  // Split on sentence-ending punctuation followed by whitespace.
+  // Each returned element keeps its trailing punctuation.
+  const parts = text.trim().split(/(?<=[.!?])\s+/)
+  return parts.map(s => s.trim()).filter(s => s.length > 0)
+}
+
+function resolveSentenceIndex(ref, cite, sentences, fullStatement) {
+  const n = sentences.length
+
+  // Priority 1: explicit sentenceIndex in valid range
+  if (typeof ref.sentenceIndex === 'number' && ref.sentenceIndex >= 0 && ref.sentenceIndex < n) {
+    return ref.sentenceIndex
+  }
+
+  // Priority 2: claimText match — only when claimText is not the full statement.
+  // claimText === fullStatement was the old placeholder pattern and carries no placement info.
+  const claimText = typeof ref.claimText === 'string' ? ref.claimText.trim() : null
+  if (claimText && claimText !== fullStatement.trim()) {
+    const claimLower = claimText.toLowerCase()
+    for (let i = 0; i < n; i++) {
+      const sentLower = sentences[i].toLowerCase()
+      // Match if sentence contains the claim prefix, or claim contains the sentence prefix
+      if (
+        sentLower.includes(claimLower.slice(0, 30)) ||
+        claimLower.includes(sentLower.replace(/[.!?]$/, '').slice(0, 30))
+      ) {
+        return i
+      }
+    }
+  }
+
+  // Priority 3: snippet keyword match against sentences
+  if (cite?.snippet && cite.snippet.length >= 8) {
+    const keywords = cite.snippet.toLowerCase().split(/\s+/).slice(0, 5).join(' ')
+    for (let i = 0; i < n; i++) {
+      if (sentences[i].toLowerCase().includes(keywords)) {
+        return i
+      }
+    }
+  }
+
+  return null // no confident match
+}
+
+export function buildInlineCitationSegments(statement, refs, citations) {
+  if (!statement) return [{ text: '' }]
+
+  const validRefs = (refs || []).filter(r => r != null && r.marker != null)
+  if (validRefs.length === 0) return [{ text: statement }]
+
+  const sentences = splitSentences(statement)
+  if (sentences.length === 0) return [{ text: statement }]
+
+  const citeById = Object.fromEntries((citations || []).map(c => [c.id, c]))
+
+  // Assign each ref to a sentence index; collect unplaced ones separately
+  const markersPerSentence = Array.from({ length: sentences.length }, () => [])
+  const unplaced = []
+
+  for (const ref of validRefs) {
+    const idx = resolveSentenceIndex(ref, citeById[ref.citationId], sentences, statement)
+    if (idx !== null) {
+      markersPerSentence[idx].push(ref.marker)
+    } else {
+      unplaced.push(ref.marker)
+    }
+  }
+
+  // Distribute unplaced markers
+  if (unplaced.length > 0) {
+    if (sentences.length === 1) {
+      // Single sentence: all go at the end (correct Wikipedia behavior)
+      markersPerSentence[0].push(...unplaced)
+    } else {
+      // Multi-sentence: spread from front rather than piling at the end
+      for (let i = 0; i < unplaced.length; i++) {
+        markersPerSentence[i % sentences.length].push(unplaced[i])
+      }
+    }
+  }
+
+  // Build segments: [text][markers][text][markers]...
+  const segments = []
+  for (let i = 0; i < sentences.length; i++) {
+    // Inter-sentence space is a prefix on every sentence except the first
+    segments.push({ text: i > 0 ? ' ' + sentences[i] : sentences[i] })
+    const markers = markersPerSentence[i].slice().sort((a, b) => a - b)
+    if (markers.length > 0) {
+      segments.push({ markers })
+    }
+  }
+
+  return segments
+}
+
+// buildCitationRefs — converts a Stage1Citation[] into InlineCitationRef[] with
+// sequential markers (1-based). Placement fields are left null so the renderer
+// falls back to snippet matching + distribution. Shared by buildStage1ReviewEvent
+// and the DiffView preview so marker numbers are guaranteed identical.
+export function buildCitationRefs(citations) {
+  return (citations || []).map((citation, index) => ({
+    citationId:    citation.id,
+    marker:        index + 1,
+    sentenceIndex: null,
+    claimText:     null,
+  }))
+}
+
+// buildStage1ReviewEvent — constructs a Stage1ReviewEvent from an applied ptResult.
+// operation: 'challenge' | 'refine'  (Stage 1 currently only produces 'challenge')
+// nodeText: node.statement at the time the user clicks Apply
+export function buildStage1ReviewEvent(ptResult, nodeText, operation = 'challenge') {
+  const citations = normalizePtCitations(ptResult)
+  const { decision, challengeAssessment, evidenceSummary, evidenceNeeded, revisedNode } = ptResult
+
+  const outcome =
+    decision === 'revise_claim'      ? 'revise'           :
+    decision === 'preserve_original' ? 'preserve'         :
+    decision === 'mark_unresolved'   ? 'unresolved'       :
+    decision === 'retrieval_failed'  ? 'retrieval_failed' : 'unresolved'
+
+  const replacementStatement =
+    decision === 'revise_claim' && revisedNode ? revisedNode.statement : null
+
+  // Do NOT set claimText to the full statement — that provides no sentence-level
+  // placement signal and caused all markers to be dumped at the end of the statement.
+  // The renderer uses sentenceIndex (null → fallback distributor) and snippet matching.
+  const inlineCitationRefs = buildCitationRefs(citations)
+
+  const diagnostics = []
+  if (decision === 'retrieval_failed') {
+    diagnostics.push({
+      code:     'RETRIEVAL_FAILED',
+      severity: 'error',
+      message:  challengeAssessment || 'Retrieval returned no useful evidence.',
+    })
+  } else if (citations.length === 0) {
+    diagnostics.push({
+      code:     'NO_CITATIONS_RETURNED',
+      severity: 'warning',
+      message:  'Challenge completed without source citations.',
+    })
+  }
+
+  return {
+    id:                  `rev_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    createdAt:           new Date().toISOString(),
+    operation,
+    outcome,
+    summary:             challengeAssessment || null,
+    critique:            null,
+    evidenceSummary:     evidenceSummary || null,
+    evidenceStillNeeded: evidenceNeeded ? [evidenceNeeded] : [],
+    originalStatement:   nodeText,
+    replacementStatement,
+    citations,
+    inlineCitationRefs,
+    diagnostics,
+  }
+}
+
+// ── Stage 2 citation utilities ─────────────────────────────────────────────────
+//
+// buildS2EvidenceCitations — normalizes evidenceConsolidation item.sources[] into
+// Stage1Citation[] so CitationMarker and buildInlineCitationSegments can be reused
+// without change. Mirrors normalizePtCitations shape; returns [] when no sources.
+export function buildS2EvidenceCitations(evidenceItem) {
+  const sources = evidenceItem?.sources || []
+  if (sources.length === 0) return []
+
+  const seen      = new Set()
+  const citations = []
+
+  for (const src of sources) {
+    const url       = src.url || ''
+    const canonical = url.toLowerCase().replace(/\/$/, '')
+    if (canonical && seen.has(canonical)) continue
+    if (canonical) seen.add(canonical)
+
+    let domain = ''
+    try { domain = new URL(url).hostname.replace(/^www\./, '') } catch (_) { domain = '' }
+
+    const supportsClaim =
+      src.relationship === 'supports'    ? 'direct'  :
+      src.relationship === 'contradicts' ? false      :
+      src.relationship === 'qualifies'   ? 'partial'  : 'partial'
+
+    citations.push({
+      id:           `s2cite_${citations.length}_${(src.title || '').toLowerCase().replace(/\W+/g, '_').slice(0, 16)}`,
+      title:        src.title     || '',
+      url,
+      source:       src.publisher || '',
+      domain,
+      publishedAt:  src.publishedAt  || null,
+      accessedAt:   new Date().toISOString(),
+      snippet:      src.snippet   || '',
+      supportsClaim,
+      confidence:   src.confidence || null,
+    })
+  }
+
+  return citations
+}
+
+// buildS2ItemCitations — resolves Stage1Citation[] for any Stage 2 item.
+// Priority: item.sources[] (evidence consolidation) → Stage 1 node latestReview.citations
+// (inherited when item references stage1 nodes) → [] (never fakes citations).
+export function buildS2ItemCitations(item, stage1Nodes) {
+  if (item?.sources?.length > 0) return buildS2EvidenceCitations(item)
+
+  const nodeIds = [
+    ...(item?.nodeIds          || []),
+    ...(item?.connectedNodeIds || []),
+    ...(item?.nodeId           ? [item.nodeId]                          : []),
+    ...(item?.relevantTo && item.relevantTo !== 'open_question' ? [item.relevantTo] : []),
+  ].filter((id, i, arr) => Boolean(id) && arr.indexOf(id) === i)
+
+  if (!nodeIds.length || !stage1Nodes?.length) return []
+
+  const seen = new Set()
+  const out  = []
+
+  for (const nodeId of nodeIds) {
+    const node  = stage1Nodes.find(n => n.id === nodeId)
+    const cites = node?.latestReview?.citations || []
+    for (const c of cites) {
+      const url = (c.url || '').toLowerCase().replace(/\/$/, '')
+      if (url && seen.has(url)) continue
+      if (url) seen.add(url)
+      out.push(c)
+    }
+  }
+
+  return out
+}
+
+// buildStage2ReviewEvent — constructs a Stage 2 review event compatible with
+// the Stage 1 shape. stage: 'stage2' distinguishes origin in any future audit.
+export function buildStage2ReviewEvent({
+  targetId,
+  targetSection,
+  operation       = 'accept',
+  outcome         = 'accepted',
+  originalText    = null,
+  replacementText = null,
+  citations       = [],
+}) {
+  return {
+    id:                 `rev2_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    createdAt:          new Date().toISOString(),
+    stage:              'stage2',
+    targetId,
+    targetSection,
+    operation,
+    outcome,
+    originalText,
+    replacementText,
+    citations,
+    inlineCitationRefs: buildCitationRefs(citations),
+    diagnostics:        [],
+  }
+}
+
 export function recommendTargetNodes(pivotType, stage1Nodes, stage2) {
   const MAX    = 3
   const dedupe = arr => [...new Map(arr.map(n => [n.id, n])).values()]

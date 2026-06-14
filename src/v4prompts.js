@@ -2500,3 +2500,54 @@ export const MOCK_STAGE4_ARTIFACT_REFINED = {
   ],
   changeSummary: 'Revised to incorporate a 4-engineer squad constraint and the CHRO\'s compliance scheduling concern for three at-risk union accounts. Updated execution approach, risks, and call to action to reflect these constraints. The strategic posture remains double-down but is now sequenced around retention-critical compliance work first.',
 }
+
+// ─── Stage 2 — item-level refine / challenge prompts ─────────────────────────
+//
+// Used by handleS2Generate in SessionFlow for per-item Refine and Challenge
+// actions across all eligible Stage 2 sections. Response shape is minimal and
+// consistent: { proposedText, assessment, citations: [] }.
+
+export function buildS2ItemRefinePrompt(sectionLabel, itemText, entity, userDirection) {
+  const directionBlock = userDirection
+    ? `\nUser refinement direction:\n${userDirection}\n\nFollow this direction unless it conflicts with evidence. If the direction asks for unsupported framing, explain the constraint in the assessment and produce the most defensible version.\n`
+    : ''
+  return `You are refining a Stage 2 intelligence analysis item for ${entity}.
+
+Section: ${sectionLabel}
+Item: "${itemText}"
+${directionBlock}
+Task: produce a sharper, more defensible, and more specific version of this item. Preserve the meaning. Improve precision and evidence-groundedness. Do not speculate beyond what the original asserts.
+
+Respond with JSON only — no prose, no markdown wrapper:
+{
+  "proposedText": "...",
+  "assessment": "One sentence explaining what was sharpened${userDirection ? ' and how the user direction shaped the revision' : ''}.",
+  "citations": []
+}`
+}
+
+export function buildS2ItemChallengePrompt(sectionLabel, itemText, entity, userDirection) {
+  const directionBlock = userDirection
+    ? `\nUser challenge direction:\n${userDirection}\n\nFocus the pressure-test on this angle. If the direction asks for analysis beyond the available evidence, note the constraint in the assessment.\n`
+    : ''
+  return `You are pressure-testing a Stage 2 analysis item for ${entity}.
+
+Section: ${sectionLabel}
+Item: "${itemText}"
+${directionBlock}
+Task: critically assess this item. If it holds up, reproduce it with any qualifications needed. If it requires revision, produce a more defensible version. If it is unsupported, flag it clearly.
+
+Respond with JSON only — no prose, no markdown wrapper:
+{
+  "proposedText": "...",
+  "assessment": "One sentence explaining the challenge outcome${userDirection ? ' and how the user direction shaped the analysis' : ''}.",
+  "citations": []
+}`
+}
+
+// Mock result — returned when no API key is configured, so controls remain exercisable.
+export const MOCK_S2_ITEM_RESULT = {
+  proposedText: 'Refined: this claim has been sharpened for precision and defensibility based on available evidence.',
+  assessment:   'The original statement was directionally accurate. The revision adds specificity and removes hedging language.',
+  citations:    [],
+}
