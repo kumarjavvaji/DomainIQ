@@ -11,13 +11,20 @@ const STATUS_ACTIONS = [
   { status: 'rejected',     label: 'Reject',        icon: 'ti-x' },
 ]
 
-export default function NodeCard({ node, allNodes, onStatusChange, onChallengeClick, onRegenClick, onNeedsReviewClick }) {
+export default function NodeCard({ node, allNodes, refinementOverride, onStatusChange, onChallengeClick, onRegenClick, onNeedsReviewClick }) {
   const nodeType  = NODE_TYPES[node.type]         || NODE_TYPES.finding
   const statusCfg = NODE_STATUS_CONFIG[node.userStatus] || NODE_STATUS_CONFIG.pending
   const { pct, color } = confPct(node.confidence)
   const trustCfg  = getTrust(node.evidence_type)
 
   const depLabels = (node.dependsOn || []).filter(Boolean)
+
+  // Resolve citation status from all available sources
+  const citationStatus = resolveCitationStatus(node)
+
+  // Refinement overlay
+  const emphasis = refinementOverride?.emphasis || null
+  const isSuppressed = emphasis === 'suppressed'
 
   const cardClass = [
     'node-card',
@@ -56,7 +63,15 @@ export default function NodeCard({ node, allNodes, onStatusChange, onChallengeCl
     : [{ text: node.statement }]
 
   return (
-    <div className={cardClass}>
+    <div
+      className={cardClass}
+      style={isSuppressed ? { opacity: 0.45, filter: 'grayscale(0.3)' } : undefined}
+    >
+      {/* Refinement emphasis banner */}
+      {refinementOverride && (
+        <RefinementBanner override={refinementOverride} />
+      )}
+
       {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', flexShrink: 0 }}>
@@ -68,6 +83,7 @@ export default function NodeCard({ node, allNodes, onStatusChange, onChallengeCl
         <span className={`node-status ${statusCfg.cls}`}>
           <i className={`ti ${statusCfg.icon}`} /> {statusCfg.label}
         </span>
+        <CitationStatusBadge status={citationStatus} />
         {node.previousStatement && (
           <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a3)', marginLeft: 'auto' }}>
             <i className="ti ti-refresh" style={{ fontSize: 9 }} /> modified
@@ -358,6 +374,101 @@ function CitationPanel({ citations, refs, reviewHistory }) {
               {priorEventCount} earlier challenge event{priorEventCount !== 1 ? 's' : ''} also on record.
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Citation status resolution ────────────────────────────────────────────────
+// Resolves a node's citation status from:
+//   1. node.citationStatus (explicit field on the node)
+//   2. node.claims[].citationStatus (claim-level citations)
+//   3. node.latestReview.citations / reviewHistory (evidence from pressure tests)
+
+function resolveCitationStatus(node) {
+  if (node.citationStatus) return node.citationStatus
+
+  if (node.claims?.length > 0) {
+    const statuses = node.claims.map(c => c.citationStatus).filter(Boolean)
+    if (statuses.includes('cited'))    return 'cited'
+    if (statuses.includes('weak'))     return 'weak'
+    if (statuses.includes('inferred')) return 'inferred'
+    if (statuses.length > 0)           return statuses[0]
+  }
+
+  const citations = node.latestReview?.citations?.length > 0
+    ? node.latestReview.citations
+    : (node.reviewHistory || []).slice().reverse().find(e => e.citations?.length > 0)?.citations || []
+
+  if (citations.length === 0) return 'uncited'
+  const levels = citations.map(c => c.supportsClaim)
+  if (levels.some(l => l === 'direct'))  return 'cited'
+  if (levels.some(l => l === 'partial')) return 'weak'
+  return 'inferred'
+}
+
+// ── CitationStatusBadge ───────────────────────────────────────────────────────
+
+const CITATION_STATUS_CONFIG = {
+  cited:    { label: 'cited',    color: 'var(--accent)',  icon: 'ti-link', bg: 'rgba(0,229,180,.08)' },
+  weak:     { label: 'weak',     color: '#fb923c',        icon: 'ti-link', bg: 'rgba(251,146,60,.08)' },
+  inferred: { label: 'inferred', color: 'var(--a2)',      icon: 'ti-chart-dots', bg: 'rgba(124,108,250,.08)' },
+  uncited:  { label: 'uncited',  color: 'var(--muted)',   icon: 'ti-unlink', bg: 'var(--s2)' },
+}
+
+function CitationStatusBadge({ status }) {
+  const cfg = CITATION_STATUS_CONFIG[status] || CITATION_STATUS_CONFIG.uncited
+  return (
+    <span style={{
+      fontSize: 9, fontFamily: 'var(--fm)', color: cfg.color,
+      padding: '1px 6px', borderRadius: 3,
+      background: cfg.bg, border: `1px solid ${cfg.color}40`,
+      display: 'inline-flex', alignItems: 'center', gap: 3,
+    }}>
+      <i className={`ti ${cfg.icon}`} style={{ fontSize: 9 }} />
+      {cfg.label}
+    </span>
+  )
+}
+
+// ── RefinementBanner ──────────────────────────────────────────────────────────
+
+const EMPHASIS_CONFIG = {
+  primary:    { label: 'primary',    color: 'var(--a2)',    bg: 'rgba(124,108,250,.06)', border: 'rgba(124,108,250,.25)', icon: 'ti-arrow-up-circle' },
+  secondary:  { label: 'secondary',  color: 'var(--muted2)', bg: 'transparent',          border: 'transparent',           icon: null },
+  suppressed: { label: 'suppressed', color: 'var(--muted)', bg: 'rgba(0,0,0,.04)',       border: 'var(--border)',          icon: 'ti-eye-off' },
+}
+
+function RefinementBanner({ override }) {
+  const cfg = EMPHASIS_CONFIG[override.emphasis] || EMPHASIS_CONFIG.secondary
+  if (override.emphasis === 'secondary' && !override.rankReason && !override.refinementNote) return null
+
+  return (
+    <div style={{
+      fontSize: 9, fontFamily: 'var(--fm)', lineHeight: 1.55,
+      padding: '5px 8px', marginBottom: 8, borderRadius: 5,
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      color: cfg.color,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: override.rankReason ? 3 : 0 }}>
+        {cfg.icon && <i className={`ti ${cfg.icon}`} style={{ fontSize: 9 }} />}
+        <span style={{ fontWeight: 600 }}>
+          {cfg.label}
+          {override.groupTag && <span style={{ fontWeight: 400, marginLeft: 5, color: 'var(--muted)' }}>· {override.groupTag}</span>}
+        </span>
+        {override.emphasisIsCitationBacked && (
+          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 9 }}>
+            <i className="ti ti-link" style={{ fontSize: 9 }} /> citation-backed
+          </span>
+        )}
+      </div>
+      {override.rankReason && (
+        <div style={{ color: 'var(--muted2)', fontSize: 9 }}>{override.rankReason}</div>
+      )}
+      {override.refinementNote && (
+        <div style={{ color: 'var(--a2)', fontSize: 9, marginTop: 3, fontStyle: 'italic' }}>
+          ↳ {override.refinementNote}
         </div>
       )}
     </div>

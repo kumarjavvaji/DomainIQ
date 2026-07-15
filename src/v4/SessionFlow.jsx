@@ -23,6 +23,7 @@ import {
 } from './learningSignals'
 import {
   buildStage1Prompt,
+  buildStage1RefinementPrompt,
   buildPressureTestPrompt,
   buildStage2Prompt,
   buildStage2ReconcilePrompt,
@@ -39,12 +40,14 @@ import {
   MOCK_PIVOT_RESULT,
   MOCK_V4_STAGE3,
   MOCK_STRATEGY_MENU,
+  MOCK_STAGE1_REFINEMENT,
   MOCK_STAGE4_ARTIFACT,
   buildStage4ArtifactRefinementPrompt,
   MOCK_STAGE4_ARTIFACT_REFINED,
   buildS2ItemRefinePrompt,
   buildS2ItemChallengePrompt,
   MOCK_S2_ITEM_RESULT,
+  buildAssessmentChunkPrompt,
 } from '../v4prompts'
 import {
   getDirectDeps,
@@ -65,8 +68,10 @@ import {
   classifyStage2Response,
   buildStage1ReviewEvent,
   buildStage2ReviewEvent,
+  DEFAULT_ASSESSMENT_CHUNKS,
+  mergeAssessmentChunks,
 } from '../v4utils'
-import { callClaude, callClaudeWithSearch } from '../api'
+import { callClaude, callClaudeWithSearch, callClaudeNoSearch, extractJsonObject } from '../api'
 
 // step: 'intent' | 'generating' | 'inspect' | 'regenerating'
 //     | 'stage2_generating' | 'stage2' | 'stage2_candidate_review'
@@ -84,6 +89,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   const [challengingNodeId, setChallengeNodeId] = useState(null)
   const [diff, setDiff]           = useState(null)
   const [error, setError]         = useState(null)
+  const [isRefiningStage1,          setIsRefiningStage1]          = useState(false)
   const [isUpdatingStrategyOptions, setIsUpdatingStrategyOptions] = useState(false)
   const [isGeneratingStrategyMenu, setIsGeneratingStrategyMenu]   = useState(false)
   const [isGeneratingSignals,      setIsGeneratingSignals]        = useState(false)
@@ -251,14 +257,100 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           acceptedSummary,
           mode,
         })
-        const { text, rawSearchBlocks: blocks } = await callClaudeWithSearch(prompt, 3500)
+        const { text, rawSearchBlocks: blocks } = await callClaudeWithSearch(prompt, 3500, 3, true)
         rawSearchBlocks = blocks
         ptResult = JSON.parse(text)
         // Safety net: Claude occasionally omits challengedNodeId from response.
-        // Patch it back from the nodeId we issued the pressure test for.
         if (!ptResult.challengedNodeId) {
           ptResult = { ...ptResult, challengedNodeId: nodeId }
         }
+
+        // ── Automatic chunking ───────────────────────────────────────
+        // If retrieval succeeded but assessment JSON was truncated or unparseable,
+        // continue automatically in small independently-parseable chunks.
+        // Retrieval is NOT rerun — the stored rawSearchBlocks are passed inline.
+        if (
+          ptResult.decision === 'assessment_truncated' ||
+          ptResult.decision === 'assessment_parse_failed'
+        ) {
+          const storedBlocks = ptResult.rawSearchBlocks || rawSearchBlocks
+          try {
+            const chunks = []
+            for (let i = 0; i < DEFAULT_ASSESSMENT_CHUNKS.length; i++) {
+              const chunkName = DEFAULT_ASSESSMENT_CHUNKS[i]
+
+              // revised_node is only needed when decision_summary says revise_claim
+              if (chunkName === 'revised_node') {
+                const decisionChunk = chunks.find(c => c.chunkName === 'decision_summary')
+                if (decisionChunk?.payload?.decision !== 'revise_claim') continue
+              }
+
+              const chunkPrompt = buildAssessmentChunkPrompt({
+                challengedNode,
+                rawSearchBlocks: storedBlocks,
+                directDeps,
+                directDownstream,
+                intent: session.intent,
+                mode,
+                chunkName,
+                sequence: i,
+              })
+
+              const rawChunkText = await callClaudeNoSearch(chunkPrompt, 2000)
+              const extracted = extractJsonObject(rawChunkText)
+              if (!extracted) throw new Error(`Chunk "${chunkName}" returned no parseable JSON`)
+              const payload = JSON.parse(extracted)
+
+              // evidence_items subchunk handling
+              if (
+                chunkName === 'evidence_items' &&
+                payload.needsSubchunks === true &&
+                Array.isArray(payload.subchunkPlan)
+              ) {
+                for (const subName of payload.subchunkPlan) {
+                  const subPrompt = buildAssessmentChunkPrompt({
+                    challengedNode,
+                    rawSearchBlocks: storedBlocks,
+                    directDeps,
+                    directDownstream,
+                    intent: session.intent,
+                    mode,
+                    chunkName: subName,
+                    sequence: i,
+                  })
+                  const rawSub = await callClaudeNoSearch(subPrompt, 1500)
+                  const extractedSub = extractJsonObject(rawSub)
+                  if (extractedSub) {
+                    chunks.push({
+                      challengedNodeId: nodeId,
+                      chunkName: subName,
+                      sequence: i,
+                      payload: JSON.parse(extractedSub),
+                    })
+                  }
+                }
+                continue // parent evidence_items chunk not added
+              }
+
+              chunks.push({ challengedNodeId: nodeId, chunkName, sequence: i, payload })
+            }
+
+            ptResult = mergeAssessmentChunks(chunks, nodeId)
+          } catch (chunkErr) {
+            // Chunking failed — surface the truncated result so user sees the
+            // amber banner and discard option rather than a silent error.
+            const truncPtResult = { ...ptResult, challengedNodeId: nodeId }
+            const truncDiff = computeDiff(nodes, truncPtResult)
+            truncDiff._ptResult = truncPtResult
+            truncDiff._rawSearchBlocks = rawSearchBlocks
+            truncDiff._mode = mode
+            setDiff(truncDiff)
+            setError(`Assessment chunking failed: ${chunkErr.message}`)
+            setStep('inspect')
+            return
+          }
+        }
+        // ── End automatic chunking ───────────────────────────────────
       }
 
       // Validate new shape — if decision field missing, this is the old shape
@@ -347,6 +439,73 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   // ── Discard diff — keep original nodes, keep challenge status ─
   function handleDiscardDiff() {
     setDiff(null)
+  }
+
+  // ── Stage 1 directional refinement ──────────────────────────────────────────
+  async function handleStage1Refine(directionalPrompt) {
+    if (!session.stage1 || !directionalPrompt.trim()) return
+    setIsRefiningStage1(true)
+    setError(null)
+
+    try {
+      let refinementData
+
+      if (!apiKeySet) {
+        await delay(1400)
+        refinementData = MOCK_STAGE1_REFINEMENT
+      } else {
+        const prompt = buildStage1RefinementPrompt({
+          nodes:            session.stage1.nodes,
+          entity:           session.entity,
+          intent:           session.intent,
+          directionalPrompt,
+        })
+        const raw = await callClaude(prompt, 3000)
+        refinementData = parseJsonResponse(raw)
+      }
+
+      // Attach originalRank from current order before applying overrides
+      const nodes = session.stage1.nodes
+      const overrides = refinementData.nodeOverrides || {}
+      const nodeOverridesWithOriginal = {}
+      nodes.forEach((n, idx) => {
+        nodeOverridesWithOriginal[n.id] = {
+          ...(overrides[n.id] || {}),
+          originalRank: idx + 1,
+          visible: true,
+        }
+      })
+
+      const refinementLayer = {
+        prompt:           directionalPrompt,
+        appliedAt:        Date.now(),
+        refinementSummary: refinementData.refinementSummary || '',
+        nodeOverrides:    nodeOverridesWithOriginal,
+      }
+
+      setSession(prev => ({
+        ...prev,
+        stage1: {
+          ...prev.stage1,
+          refinementLayer,
+          refinementHistory: [
+            ...(prev.stage1.refinementHistory || []),
+            { ...refinementLayer, clearedAt: null },
+          ],
+        },
+      }))
+    } catch (e) {
+      setError(`Stage 1 refinement failed: ${e.message}`)
+    } finally {
+      setIsRefiningStage1(false)
+    }
+  }
+
+  function handleClearStage1Refinement() {
+    setSession(prev => ({
+      ...prev,
+      stage1: { ...prev.stage1, refinementLayer: null },
+    }))
   }
 
   // ── Run Stage 2 ───────────────────────────────────────────────
@@ -1649,6 +1808,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             session={session}
             diff={diff}
             regenerating={effectiveStep === 'regenerating'}
+            isRefining={isRefiningStage1}
             onNodeStatusChange={handleNodeStatusChange}
             onChallengeClick={handleChallengeClick}
             onRegenNode={handleRegenNode}
@@ -1657,6 +1817,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             onDiscardDiff={handleDiscardDiff}
             onRunStage2={handleRunStage2}
             onViewStage2={() => setStep('stage2')}
+            onRefine={handleStage1Refine}
+            onClearRefinement={handleClearStage1Refinement}
           />
         )}
 

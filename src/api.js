@@ -52,7 +52,7 @@ export async function callClaude(prompt, maxTokens = 3500) {
  * If the tool type string is unsupported by the model, the API returns an HTTP error
  * which surfaces as retrieval_failed — no fake evidence is ever produced.
  */
-export async function callClaudeWithSearch(prompt, maxTokens = 3500, maxSearches = 3) {
+export async function callClaudeWithSearch(prompt, maxTokens = 3500, maxSearches = 3, isPressureTest = false) {
   if (!hasApiKey()) {
     throw new Error('No API key configured. Set VITE_ANTHROPIC_API_KEY in .env.local')
   }
@@ -82,7 +82,7 @@ export async function callClaudeWithSearch(prompt, maxTokens = 3500, maxSearches
     throw new Error(`API error ${res.status}: ${errText}`)
   }
   const data = await res.json()
-  return parseSearchResponse(data)
+  return parseSearchResponse(data, isPressureTest)
 }
 
 /**
@@ -91,8 +91,10 @@ export async function callClaudeWithSearch(prompt, maxTokens = 3500, maxSearches
  * JSON.parse.  Trying each candidate in order means prose containing
  * incidental {…} pairs before the real JSON does not produce a false match.
  * Returns the raw JSON string, or null if nothing parseable is found.
+ *
+ * Exported so chunk-generation callers can extract JSON from no-search responses.
  */
-function extractJsonObject(text) {
+export function extractJsonObject(text) {
   const cleaned = text.replace(/```json\s*/g, '').replace(/```/g, '')
   let searchFrom = 0
   while (searchFrom < cleaned.length) {
@@ -145,7 +147,7 @@ function extractJsonObject(text) {
  *
  * Returns { text: string, rawSearchBlocks: RawSearchBlock[] }
  */
-function parseSearchResponse(data) {
+function parseSearchResponse(data, isPressureTest = false) {
   const blocks = data.content || []
   const rawSearchBlocks = []
   const textParts = []
@@ -179,34 +181,100 @@ function parseSearchResponse(data) {
     }
   }
 
-  // If no JSON block was found, build a synthetic retrieval_failed result.
-  // challengedNodeId is null here — Stage1Panel handles this by rendering the
-  // DiffView above the node list as a fallback when no node ID matches.
+  // If no JSON block was found, build a sentinel that distinguishes three cases:
+  //
+  //   assessment_truncated  — search ran (rawSearchBlocks exist) AND stop_reason=max_tokens
+  //                           → SessionFlow will continue assessment in chunks automatically
+  //   assessment_parse_failed — search ran but JSON was structurally invalid/absent
+  //                           → SessionFlow will continue assessment in chunks automatically
+  //   retrieval_failed      — no search evidence at all → real retrieval error, no chunks possible
+  //
+  // The truncated/parse-failed sentinels carry rawSearchBlocks so SessionFlow can
+  // use the already-retrieved evidence without rerunning retrieval.
   if (!jsonText) {
+    const hasEvidence = rawSearchBlocks.length > 0
     const preview = textParts.join(' ').trim().slice(0, 200) || '(empty response)'
-    jsonText = JSON.stringify({
-      decision: 'retrieval_failed',
+    const emptyQD = {
+      improvedPrecision: false, reducedOvergeneralization: false,
+      improvedSegmentation: false, improvedOperationalPlausibility: false,
+      reducedConfidenceAppropriately: false, preservedStrongOriginalReasoning: false,
+      surfacedEvidenceGap: false, improvedDecisionUsefulness: false, notes: '',
+    }
+    const baseFields = {
       challengedNodeId: null,
-      challengeAssessment: `The pressure test returned a response that could not be parsed as a valid assessment. Response preview: "${preview}"`,
-      evidenceSummary: '',
-      evidenceNeeded: '',
-      confidenceChangeReason: '',
-      qualityDelta: {
-        improvedPrecision: false, reducedOvergeneralization: false,
-        improvedSegmentation: false, improvedOperationalPlausibility: false,
-        reducedConfidenceAppropriately: false, preservedStrongOriginalReasoning: false,
-        surfacedEvidenceGap: false, improvedDecisionUsefulness: false, notes: '',
-      },
-      retrievedEvidence: [],
-      inlineCitations: [],
-      suggestedResearchQueries: [],
-      revisedNode: null,
-      updatedDownstream: [],
-      preservedDownstreamIds: [],
-    })
+      evidenceSummary: '', evidenceNeeded: '', confidenceChangeReason: '',
+      qualityDelta: emptyQD,
+      retrievedEvidence: [], inlineCitations: [], suggestedResearchQueries: [],
+      revisedNode: null, updatedDownstream: [], preservedDownstreamIds: [],
+    }
+
+    // assessment_truncated / assessment_parse_failed sentinels are pressure-test-only.
+    // Stage 2 and other callers fall through to the plain retrieval_failed sentinel
+    // so classifyStage2Response never sees decision+challengedNodeId fields.
+    if (isPressureTest && hasEvidence && data.stop_reason === 'max_tokens') {
+      jsonText = JSON.stringify({
+        ...baseFields,
+        decision: 'assessment_truncated',
+        rawSearchBlocks,
+        stopReason: 'max_tokens',
+        parseErrorReason: 'model_output_truncated',
+        challengeAssessment: 'Assessment output was truncated before completing. Retrieval succeeded — continuing in chunks.',
+      })
+    } else if (isPressureTest && hasEvidence) {
+      jsonText = JSON.stringify({
+        ...baseFields,
+        decision: 'assessment_parse_failed',
+        rawSearchBlocks,
+        stopReason: data.stop_reason || null,
+        parseErrorReason: 'invalid_assessment_json',
+        challengeAssessment: `Assessment response could not be parsed. Retrieval succeeded — continuing in chunks. Preview: "${preview}"`,
+      })
+    } else {
+      jsonText = JSON.stringify({
+        ...baseFields,
+        decision: 'retrieval_failed',
+        challengeAssessment: `The pressure test returned a response that could not be parsed as a valid assessment. Response preview: "${preview}"`,
+      })
+    }
   }
 
   return { text: jsonText, rawSearchBlocks }
+}
+
+/**
+ * callClaudeNoSearch — assessment chunk calls.
+ *
+ * Identical transport to callClaude but sends no tools array, so the model
+ * cannot call web_search.  Used exclusively during chunked assessment generation
+ * where the evidence bundle is passed inline in the prompt.
+ *
+ * Returns raw text (not JSON-extracted) so callers can use extractJsonObject
+ * and handle chunk-specific parse failures individually.
+ */
+export async function callClaudeNoSearch(prompt, maxTokens = 2000) {
+  if (!hasApiKey()) {
+    throw new Error('No API key configured. Set VITE_ANTHROPIC_API_KEY in .env.local')
+  }
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.status.toString())
+    throw new Error(`API error ${res.status}: ${errText}`)
+  }
+  const data = await res.json()
+  return (data.content || []).map(c => c.text || '').join('')
 }
 
 export function buildPrompt({ domain, lens, stage, context, role, background, focuses, existingPatterns }) {

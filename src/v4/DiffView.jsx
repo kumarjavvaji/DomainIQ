@@ -65,8 +65,15 @@ export default function DiffView({ diff, onAccept, onDiscard }) {
         <RetrievalFailed ptResult={ptResult} onDiscard={onDiscard} />
       )}
 
+      {/* assessment_truncated / assessment_parse_failed: chunking failed fallback */}
+      {(decision === 'assessment_truncated' || decision === 'assessment_parse_failed') && (
+        <AssessmentTruncated ptResult={ptResult} onDiscard={onDiscard} />
+      )}
+
       {/* All other decisions: full assessment */}
-      {decision !== 'retrieval_failed' && (
+      {decision !== 'retrieval_failed' &&
+       decision !== 'assessment_truncated' &&
+       decision !== 'assessment_parse_failed' && (
         <>
           <AssessmentBlock ptResult={ptResult} />
           {decision === 'revise_claim' && <RevisionBlock diff={diff} ptResult={ptResult} />}
@@ -95,7 +102,9 @@ function DecisionBanner({ decision }) {
     revise_claim:      { label: 'Revise claim',      icon: 'ti-edit',           color: '#fb923c', bg: 'rgba(251,146,60,.06)',   border: 'rgba(251,146,60,.2)'   },
     preserve_original: { label: 'Preserve original', icon: 'ti-shield-check',   color: 'var(--accent)', bg: 'rgba(0,229,180,.06)', border: 'rgba(0,229,180,.2)' },
     mark_unresolved:   { label: 'Mark unresolved',   icon: 'ti-help',           color: 'var(--a2)', bg: 'rgba(124,108,250,.06)', border: 'rgba(124,108,250,.2)' },
-    retrieval_failed:  { label: 'Retrieval failed',  icon: 'ti-wifi-off',       color: '#f87171', bg: 'rgba(248,113,113,.06)', border: 'rgba(248,113,113,.2)'  },
+    retrieval_failed:       { label: 'Retrieval failed',        icon: 'ti-wifi-off',    color: '#f87171', bg: 'rgba(248,113,113,.06)', border: 'rgba(248,113,113,.2)'  },
+    assessment_truncated:   { label: 'Assessment truncated',    icon: 'ti-clock-pause', color: '#f59e0b', bg: 'rgba(245,158,11,.06)',  border: 'rgba(245,158,11,.2)'  },
+    assessment_parse_failed:{ label: 'Assessment parse failed', icon: 'ti-code-off',    color: '#f59e0b', bg: 'rgba(245,158,11,.06)',  border: 'rgba(245,158,11,.2)'  },
   }[decision] || { label: decision, icon: 'ti-question-mark', color: 'var(--muted)', bg: 'var(--s2)', border: 'var(--border)' }
 
   return (
@@ -121,13 +130,17 @@ function decisionSubtitle(decision) {
   if (decision === 'revise_claim')      return 'Retrieved evidence supports a more precise or defensible version of this claim'
   if (decision === 'preserve_original') return 'Original claim survives scrutiny — challenge does not materially weaken it'
   if (decision === 'mark_unresolved')   return 'Genuine ambiguity — evidence insufficient to decide either way'
-  if (decision === 'retrieval_failed')  return 'No useful evidence returned — evaluation could not be completed'
+  if (decision === 'retrieval_failed')       return 'No useful evidence returned — evaluation could not be completed'
+  if (decision === 'assessment_truncated')   return 'Retrieval succeeded — assessment output was truncated; chunk continuation failed'
+  if (decision === 'assessment_parse_failed') return 'Retrieval succeeded — assessment response could not be parsed; chunk continuation failed'
   return ''
 }
 
 function decisionBorderColor(decision) {
-  if (decision === 'revise_claim')      return 'rgba(251,146,60,.3)'
-  if (decision === 'preserve_original') return 'rgba(0,229,180,.25)'
+  if (decision === 'revise_claim')          return 'rgba(251,146,60,.3)'
+  if (decision === 'preserve_original')     return 'rgba(0,229,180,.25)'
+  if (decision === 'assessment_truncated')   return 'rgba(245,158,11,.3)'
+  if (decision === 'assessment_parse_failed') return 'rgba(245,158,11,.3)'
   if (decision === 'mark_unresolved')   return 'rgba(124,108,250,.3)'
   if (decision === 'retrieval_failed')  return 'rgba(248,113,113,.3)'
   return 'var(--border)'
@@ -461,6 +474,30 @@ function RetrievalFailed({ ptResult, onDiscard }) {
       </div>
       <div style={{ fontSize: 10, color: 'var(--a4)', marginBottom: 14 }}>
         <i className="ti ti-refresh" style={{ fontSize: 10, verticalAlign: -1 }} /> You can retry by clicking "Pressure test" on the node again.
+      </div>
+      <button onClick={onDiscard} style={S.discardBtn}>Discard</button>
+    </div>
+  )
+}
+
+// ─── Assessment truncated / parse failed ─────────────────────────────────────
+// Rendered only when automatic chunk continuation itself failed.
+// Normal path: chunking runs transparently and DiffView receives a merged result.
+function AssessmentTruncated({ ptResult, onDiscard }) {
+  const isTruncated = ptResult.decision === 'assessment_truncated'
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.7, marginBottom: 10 }}>
+        Retrieval succeeded. Assessment output exceeded the limit.
+        Continuing refinement in parseable chunks using the same evidence.
+      </div>
+      <div style={{ fontSize: 10, color: '#f59e0b', marginBottom: 14 }}>
+        <i className="ti ti-alert-triangle" style={{ fontSize: 10, verticalAlign: -1 }} />{' '}
+        {isTruncated
+          ? 'The model response was cut off before the JSON completed (max_tokens).'
+          : 'The model response could not be parsed as valid JSON.'
+        }{' '}
+        Chunk continuation also failed. Re-run the pressure test to try again.
       </div>
       <button onClick={onDiscard} style={S.discardBtn}>Discard</button>
     </div>
