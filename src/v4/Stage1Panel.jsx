@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import NodeCard from './NodeCard'
 import DiffView from './DiffView'
-import { policyLabel } from '../v4utils'
+import { policyLabel, mergeResolvedCitations } from '../v4utils'
 
 export default function Stage1Panel({
   session,
@@ -18,10 +18,39 @@ export default function Stage1Panel({
   onViewStage2,
   onRefine,
   onClearRefinement,
+  onEnrich,
+  isEnriching,
+  enrichmentAvailable,
+  enrichmentCount,
 }) {
   const { stage1, generationPolicy, entity, intent } = session
   const nodes = stage1?.nodes || []
   const refinementLayer = stage1?.refinementLayer || null
+
+  // hideSuppressed is lifted here so it can filter the node list rendered below.
+  // DirectionalRefinementBar reads it as a prop and toggles via onToggleHideSuppressed.
+  const [hideSuppressed, setHideSuppressed] = useState(false)
+
+  // Build the session-level citation registry lookup
+  const citationById = useMemo(() => {
+    const map = new Map()
+    ;(stage1?.citations || []).forEach(c => map.set(c.id, c))
+    return map
+  }, [stage1?.citations])
+
+  // Resolve citations for a node: merge Stage 1 registry refs with pressure-test citations.
+  // Registry takes precedence; pressure-test citations are merged and de-duplicated.
+  function resolveNodeCitations(node) {
+    const fromRegistry = (node.citationRefs || [])
+      .map(id => citationById.get(id))
+      .filter(Boolean)
+
+    const reviewCitations = node.latestReview?.citations?.length > 0
+      ? node.latestReview.citations
+      : (node.reviewHistory || []).slice().reverse().find(e => e.citations?.length > 0)?.citations || []
+
+    return mergeResolvedCitations(fromRegistry, reviewCitations)
+  }
 
   // Auto-scroll to assessment panel whenever a new diff arrives
   useEffect(() => {
@@ -30,13 +59,30 @@ export default function Stage1Panel({
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [diff])
 
+  // Reset hideSuppressed when refinement is cleared
+  useEffect(() => {
+    if (!refinementLayer) setHideSuppressed(false)
+  }, [refinementLayer])
+
   const accepted     = nodes.filter(n => n.userStatus === 'accepted').length
   const challenged   = nodes.filter(n => n.userStatus === 'challenged').length
   const rejected     = nodes.filter(n => n.userStatus === 'rejected').length
   const needsReview  = nodes.filter(n => n.userStatus === 'needs_review').length
   const pending      = nodes.filter(n => n.userStatus === 'pending').length
 
-  // Sort nodes by refinement rank when active; preserve original array order otherwise
+  // Primary-node gate: respect emphasis when refinement is active.
+  // Secondary and suppressed nodes must not block Stage 2 unlock.
+  const primaryNodes = refinementLayer
+    ? nodes.filter(n => {
+        const ov = refinementLayer.nodeOverrides?.[n.id]
+        return !ov || ov.emphasis === 'primary'
+      })
+    : nodes
+  const primaryReviewed = primaryNodes.filter(n => n.userStatus !== 'pending').length
+  const primaryCount    = primaryNodes.length
+
+  // Sort nodes by refinement rank when active; preserve original array order otherwise.
+  // Smaller rank = higher placement (confirmed from sort implementation).
   const sortedNodes = useMemo(() => {
     if (!refinementLayer) return nodes
     return [...nodes].sort((a, b) => {
@@ -102,6 +148,8 @@ export default function Stage1Panel({
       <DirectionalRefinementBar
         refinementLayer={refinementLayer}
         isRefining={isRefining}
+        hideSuppressed={hideSuppressed}
+        onToggleHideSuppressed={() => setHideSuppressed(v => !v)}
         onRefine={onRefine}
         onClear={onClearRefinement}
       />
@@ -118,11 +166,15 @@ export default function Stage1Panel({
       <div style={{ marginBottom: 14 }}>
         {sortedNodes.map(node => {
           const override = refinementLayer?.nodeOverrides?.[node.id] || null
+          // Filter suppressed nodes only when user has explicitly enabled hideSuppressed
+          if (hideSuppressed && override?.emphasis === 'suppressed') return null
+          const resolvedCitations = resolveNodeCitations(node)
           return (
             <React.Fragment key={node.id}>
               <NodeCard
                 node={node}
                 allNodes={nodes}
+                citations={resolvedCitations}
                 refinementOverride={override}
                 onStatusChange={onNodeStatusChange}
                 onChallengeClick={onChallengeClick}
@@ -187,11 +239,52 @@ export default function Stage1Panel({
         </div>
       )}
 
+      {/* Evidence enrichment button — only when there are citation gaps */}
+      {(enrichmentAvailable || isEnriching) && (
+        <div style={{
+          padding: '8px 14px', marginBottom: 8,
+          background: 'var(--s2)', border: '1px solid var(--border)',
+          borderRadius: 'var(--r)', display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <i className="ti ti-database-search" style={{ fontSize: 12, color: 'var(--a3)', flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600, color: 'var(--muted2)' }}>
+              {isEnriching ? 'Enriching evidence…' : `Enrich evidence — ${enrichmentCount} primary gap${enrichmentCount !== 1 ? 's' : ''}`}
+            </div>
+            <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginTop: 1 }}>
+              {isEnriching
+                ? 'Running bounded search pass — this may take a moment'
+                : 'Run a bounded search pass to retrieve citations for uncited primary nodes'}
+            </div>
+          </div>
+          <button
+            onClick={enrichmentAvailable && !isEnriching ? onEnrich : undefined}
+            disabled={!enrichmentAvailable || isEnriching}
+            style={{
+              fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+              padding: '5px 12px', borderRadius: 5,
+              cursor: enrichmentAvailable && !isEnriching ? 'pointer' : 'not-allowed',
+              background: enrichmentAvailable && !isEnriching ? 'var(--a3)' : 'var(--s2)',
+              color: enrichmentAvailable && !isEnriching ? '#fff' : 'var(--muted)',
+              border: `1px solid ${enrichmentAvailable && !isEnriching ? 'var(--a3)' : 'var(--border)'}`,
+              opacity: isEnriching ? 0.6 : 1,
+              display: 'flex', alignItems: 'center', gap: 5,
+              flexShrink: 0,
+            }}
+          >
+            {isEnriching
+              ? <><i className="ti ti-loader-2" style={{ fontSize: 10 }} /> Running…</>
+              : <><i className="ti ti-search" style={{ fontSize: 10 }} /> Enrich</>
+            }
+          </button>
+        </div>
+      )}
+
       {/* Stage 2 trigger */}
       <Stage2Trigger
         hasStage2={!!session.stage2}
-        reviewedCount={accepted + challenged + rejected + needsReview}
-        nodeCount={nodes.length}
+        primaryReviewed={primaryReviewed}
+        primaryCount={primaryCount}
         onRun={onRunStage2}
         onView={onViewStage2}
       />
@@ -215,10 +308,9 @@ export default function Stage1Panel({
 
 // ── DirectionalRefinementBar ──────────────────────────────────────────────────
 
-function DirectionalRefinementBar({ refinementLayer, isRefining, onRefine, onClear }) {
-  const [editing, setEditing]   = useState(false)
-  const [prompt, setPrompt]     = useState('')
-  const [hideSuppressed, setHideSuppressed] = useState(false)
+function DirectionalRefinementBar({ refinementLayer, isRefining, hideSuppressed, onToggleHideSuppressed, onRefine, onClear }) {
+  const [editing, setEditing] = useState(false)
+  const [prompt, setPrompt]   = useState('')
 
   function handleSubmit() {
     const trimmed = prompt.trim()
@@ -268,7 +360,7 @@ function DirectionalRefinementBar({ refinementLayer, isRefining, onRefine, onCle
               {primary    > 0 && <Chip label={`${primary} primary`}    color="var(--a2)" />}
               {suppressed > 0 && <Chip label={`${suppressed} suppressed`} color="var(--muted)" />}
               <button
-                onClick={() => setHideSuppressed(v => !v)}
+                onClick={onToggleHideSuppressed}
                 style={{
                   fontSize: 9, fontFamily: 'var(--fm)', padding: '2px 7px',
                   border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
@@ -391,8 +483,8 @@ function Chip({ label, color }) {
   )
 }
 
-function Stage2Trigger({ hasStage2, reviewedCount, nodeCount, onRun, onView }) {
-  const canRun = reviewedCount > 0
+function Stage2Trigger({ hasStage2, primaryReviewed, primaryCount, onRun, onView }) {
+  const canRun = primaryCount > 0 && primaryReviewed === primaryCount
 
   if (hasStage2) {
     return (
@@ -456,8 +548,8 @@ function Stage2Trigger({ hasStage2, reviewedCount, nodeCount, onRun, onView }) {
         </div>
         <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginTop: 1 }}>
           {canRun
-            ? `${reviewedCount} of ${nodeCount} nodes reviewed — ready to deepen with live retrieval`
-            : 'Accept or challenge nodes above to unlock Stage 2'}
+            ? `All ${primaryCount} primary nodes reviewed — ready to deepen with live retrieval`
+            : `${primaryReviewed} of ${primaryCount} primary nodes reviewed — review all primary nodes to unlock`}
         </div>
       </div>
       <button

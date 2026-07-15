@@ -238,7 +238,7 @@ function parseSearchResponse(data, isPressureTest = false) {
     }
   }
 
-  return { text: jsonText, rawSearchBlocks }
+  return { text: jsonText, rawSearchBlocks, stopReason: data.stop_reason || null }
 }
 
 /**

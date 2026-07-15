@@ -253,44 +253,80 @@ export function applyDiff(originalNodes, ptResult) {
 // Prioritizes by analytical signal: high-confidence nodes first, metadata stripped,
 // counts capped so low-value context does not crowd out output token headroom.
 export function buildStage2ContextPacket(session) {
-  const nodes = session.stage1?.nodes || []
+  const stage1 = session.stage1 || {}
+  const nodes = stage1.nodes || []
+  const refinementLayer = stage1.refinementLayer || null
+  const citationsById = new Map((stage1.citations || []).map(c => [c.id, c]))
+
+  // Respect emphasis when a refinement layer is active; otherwise all nodes are primary.
+  const primaryNodes = refinementLayer
+    ? nodes.filter(n => {
+        const ov = refinementLayer.nodeOverrides?.[n.id]
+        return !ov || ov.emphasis === 'primary'
+      })
+    : nodes
+
   const confidenceRank = { high: 0, medium: 1, low: 2 }
   const byConfidence = (a, b) => (confidenceRank[a.confidence] ?? 3) - (confidenceRank[b.confidence] ?? 3)
-
-  // Strip to analytical-signal fields only — Stage 2 does not need status metadata
   const slim = n => ({ id: n.id, type: n.type, statement: n.statement, confidence: n.confidence })
 
-  const accepted = nodes
+  const accepted = primaryNodes
     .filter(n => n.userStatus === 'accepted')
     .sort(byConfidence)
     .slice(0, 6)
     .map(slim)
 
-  const refined = nodes
-    .filter(n => n.previousStatement)
+  const challenged = primaryNodes
+    .filter(n => n.userStatus === 'challenged')
     .sort(byConfidence)
     .slice(0, 4)
-    .map(n => ({ ...slim(n), previousStatement: n.previousStatement }))
+    .map(n => ({ ...slim(n), challengeNote: n.userNote || null }))
 
-  const unresolved = nodes
+  const unresolved = primaryNodes
     .filter(n => n.userStatus === 'needs_review')
     .slice(0, 3)
     .map(n => ({ ...slim(n), userNote: n.userNote }))
 
-  const patterns = [...(session.stage1?.inferredPatterns || [])]
-    .sort(byConfidence)
-    .slice(0, 2)
+  // Collect canonical citations from included primary nodes, de-duped by ID, capped at 10.
+  const includedPrimary = primaryNodes.filter(n =>
+    ['accepted', 'challenged', 'needs_review'].includes(n.userStatus)
+  )
+  const citationIdSet = new Set()
+  includedPrimary.forEach(n => (n.citationRefs || []).forEach(id => citationIdSet.add(id)))
+  const citations = [...citationIdSet]
+    .map(id => citationsById.get(id))
+    .filter(Boolean)
+    .slice(0, 10)
 
   return {
-    entity:           session.entity,
-    intent:           session.intent,
-    stage1Summary:    session.stage1?.summary || '',
-    acceptedNodes:    accepted,
-    refinedNodes:     refined,
-    unresolvedNodes:  unresolved,
-    openQuestions:    (session.stage1?.openQuestions || []).slice(0, 3),
-    inferredPatterns: patterns,
+    entity:          session.entity,
+    intent:          session.intent,
+    stage1Summary:   stage1.summary || '',
+    acceptedNodes:   accepted,
+    challengedNodes: challenged,
+    unresolvedNodes: unresolved,
+    citations,
+    openQuestions:   (stage1.openQuestions || []).slice(0, 3),
   }
+}
+
+// Computes enrichment availability — uncited active primary nodes that could benefit
+// from a bounded search pass. Excludes hypotheses (speculative by design, no citation expected).
+export function computeEnrichmentAvailable(stage1, refinementLayer) {
+  if (!stage1) return { available: false, count: 0, gapNodeIds: [] }
+  const nodes = stage1.nodes || []
+  const primaryNodes = refinementLayer
+    ? nodes.filter(n => {
+        const ov = refinementLayer.nodeOverrides?.[n.id]
+        return !ov || ov.emphasis === 'primary'
+      })
+    : nodes
+  const gapNodes = primaryNodes.filter(n =>
+    n.userStatus !== 'rejected' &&
+    (n.citationRefs || []).length === 0 &&
+    n.evidence_type !== 'hypothesis'
+  )
+  return { available: gapNodes.length > 0, count: gapNodes.length, gapNodeIds: gapNodes.map(n => n.id) }
 }
 
 // Returns a compact policy description string for display in UI badges.
@@ -922,6 +958,174 @@ export function buildStage1ReviewEvent(ptResult, nodeText, operation = 'challeng
     inlineCitationRefs,
     diagnostics,
   }
+}
+
+// ── Stage 1 generation citation pipeline ──────────────────────────────────────
+//
+// Three-step pipeline:
+//   1. extractSourcesFromSearchBlocks — host-authoritative URL/title/domain from API
+//   2. buildStage1Citations           — merge host identity + model metadata; map IDs
+//   3. validateStage1NodeCitations    — remap node/claim refs, add validationWarnings
+//
+// The model-authored retrievedEvidence[] provides node-to-source mapping and
+// supplementary metadata (snippet, publisher, type). The rawSearchBlocks provide
+// authoritative source identity (URL, title). Sources that appear in the model's
+// retrievedEvidence but have no matching URL in rawSearchBlocks are discarded.
+//
+// KNOWN PROVENANCE LIMITATION:
+// When rawSearchBlocks content items do not expose a usable url (e.g., the
+// Anthropic web_search tool returns encrypted content only), the pipeline falls
+// back to accepting model-authored retrievedEvidence as the sole source record.
+// In that case source metadata is authored by the model, not extracted from raw
+// search output. The model is instructed not to invent URLs, but this cannot be
+// fully verified host-side.
+
+export function extractSourcesFromSearchBlocks(rawSearchBlocks) {
+  const sources = []
+  const seen = new Set()
+  ;(rawSearchBlocks || []).forEach(block => {
+    const items = Array.isArray(block.content) ? block.content : []
+    items.forEach(item => {
+      const url = (item.url || '').trim()
+      if (!url) return
+      const canonical = url.toLowerCase().replace(/\/$/, '')
+      if (seen.has(canonical)) return
+      seen.add(canonical)
+      let domain = ''
+      try { domain = new URL(url).hostname.replace(/^www\./, '') } catch (_) {}
+      // encrypted_content is the raw page content block Anthropic exposes to the model;
+      // as plain text it may be very long — take only the first 300 chars as a snippet hint.
+      const rawSnippet = item.encrypted_content || item.content || item.text || ''
+      sources.push({
+        _canonical: canonical,
+        url,
+        title:      item.title    || '',
+        domain,
+        snippet:    typeof rawSnippet === 'string' ? rawSnippet.slice(0, 300) : '',
+        publishedAt: item.page_age || null,
+      })
+    })
+  })
+  return sources
+}
+
+export function buildStage1Citations(rawSearchBlocks, retrievedEvidence) {
+  const hostSources    = extractSourcesFromSearchBlocks(rawSearchBlocks)
+  const hostByCanonical = new Map(hostSources.map(s => [s._canonical, s]))
+  const hasHostData    = hostSources.length > 0
+
+  const citations      = []
+  const modelIdToHostId = new Map()
+  const seenCanonical  = new Set()
+
+  for (const e of (retrievedEvidence || [])) {
+    const url = (e.url || '').trim()
+    if (!url) continue
+    const canonical = url.toLowerCase().replace(/\/$/, '')
+
+    if (hasHostData) {
+      // Guard: only accept sources that appeared in actual search output
+      if (!hostByCanonical.has(canonical)) continue
+    }
+
+    if (seenCanonical.has(canonical)) {
+      // Duplicate URL from model — map the extra model ID to the existing host citation
+      const existing = citations.find(c => {
+        const cu = (c.url || '').toLowerCase().replace(/\/$/, '')
+        return cu === canonical
+      })
+      if (existing && e.id) modelIdToHostId.set(e.id, existing.id)
+      continue
+    }
+    seenCanonical.add(canonical)
+
+    const host    = hostByCanonical.get(canonical)
+    let domain    = host?.domain || ''
+    if (!domain) {
+      try { domain = new URL(url).hostname.replace(/^www\./, '') } catch (_) {}
+    }
+
+    const id      = `s1cite_${citations.length + 1}`
+    const snippet = e.snippet
+      || (host?.snippet && typeof host.snippet === 'string' ? host.snippet : '')
+
+    const citation = {
+      id,
+      title:        host?.title      || e.title       || '',
+      url:          host?.url        || url,
+      source:       e.publisher      || domain,
+      domain,
+      publishedAt:  host?.publishedAt || e.publishedAt || null,
+      accessedAt:   new Date().toISOString(),
+      snippet:      snippet.slice(0, 300),
+      supportsClaim: mapEvidenceSupportLevel(e.type),
+      confidence:   e.confidence     || null,
+    }
+    citations.push(citation)
+    if (e.id) modelIdToHostId.set(e.id, id)
+  }
+
+  return { citations, modelIdToHostId }
+}
+
+export function validateStage1NodeCitations(nodes, citationById, modelIdToHostId) {
+  return nodes.map(node => {
+    const rawRefs  = node.citationRefs || []
+    const validRefs = rawRefs
+      .map(id => modelIdToHostId.get(id) ?? id)
+      .filter(id => citationById.has(id))
+      .filter((id, i, arr) => arr.indexOf(id) === i) // dedupe
+
+    const rawClaims  = node.claims || []
+    const validClaims = rawClaims.map(claim => ({
+      ...claim,
+      citationRefs: (claim.citationRefs || [])
+        .map(id => modelIdToHostId.get(id) ?? id)
+        .filter(id => citationById.has(id))
+        .filter((id, i, arr) => arr.indexOf(id) === i),
+    }))
+
+    const warnings = [...(node.validationWarnings || [])]
+    const isVerifiedWithNoRefs = node.evidence_type === 'verified_fact' && validRefs.length === 0
+    if (isVerifiedWithNoRefs) {
+      warnings.push({
+        code:     'verified_fact_without_citation',
+        severity: 'warning',
+        message:  rawRefs.length > 0
+          ? 'Classified as verified_fact but no valid external citation resolved from search results.'
+          : 'Classified as verified_fact but no citation was provided.',
+      })
+    }
+
+    const citationGap = isVerifiedWithNoRefs
+      ? (node.citationGap || 'No supporting source was retrieved for this verified claim')
+      : (node.citationGap || null)
+
+    return {
+      ...node,
+      citationRefs:       validRefs,
+      claims:             validClaims,
+      validationWarnings: warnings,
+      citationGap,
+    }
+  })
+}
+
+// mergeResolvedCitations — merge Stage 1 registry citations with pressure-test
+// latestReview citations, de-duplicating by canonical URL.
+// Called at render time in Stage1Panel; no mutations to stored data.
+export function mergeResolvedCitations(registryCitations, reviewCitations) {
+  if (!registryCitations?.length && !reviewCitations?.length) return []
+  if (!registryCitations?.length) return reviewCitations || []
+  if (!reviewCitations?.length) return registryCitations
+
+  const seen   = new Set(registryCitations.map(c => (c.url || c.id).toLowerCase().replace(/\/$/, '')))
+  const merged = [...registryCitations]
+  for (const c of reviewCitations) {
+    const key = (c.url || c.id).toLowerCase().replace(/\/$/, '')
+    if (!seen.has(key)) { seen.add(key); merged.push(c) }
+  }
+  return merged
 }
 
 // ── Stage 2 citation utilities ─────────────────────────────────────────────────
