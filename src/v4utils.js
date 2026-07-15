@@ -1,6 +1,67 @@
 // DomainIQ v4 — pure utility functions for diff, dependency resolution, and context summarization
 // No React, no side effects.
 
+// ── Chunked assessment ────────────────────────────────────────────────────────
+
+export const DEFAULT_ASSESSMENT_CHUNKS = [
+  'decision_summary',
+  'challenge_assessment',
+  'revised_node',
+  'evidence_summary',
+  'evidence_items',
+  'confidence_and_quality_delta',
+]
+
+function defaultQualityDelta() {
+  return {
+    improvedPrecision: false, reducedOvergeneralization: false,
+    improvedSegmentation: false, improvedOperationalPlausibility: false,
+    reducedConfidenceAppropriately: false, preservedStrongOriginalReasoning: false,
+    surfacedEvidenceGap: false, improvedDecisionUsefulness: false, notes: '',
+  }
+}
+
+/**
+ * mergeAssessmentChunks — assembles a full PressureTestResult from independently-parsed
+ * chunk objects.  Handles evidence_items subchunks (names matching evidence_items_*)
+ * by collecting and flattening their items arrays.
+ */
+export function mergeAssessmentChunks(chunks, challengedNodeId) {
+  const get = (name) => chunks.find(c => c.chunkName === name)?.payload
+
+  const decisionPayload  = get('decision_summary') || {}
+  const challengePayload = get('challenge_assessment') || {}
+  const revisedPayload   = get('revised_node') || null
+  const evidSumPayload   = get('evidence_summary') || {}
+  const evidItemsPayload = get('evidence_items') || {}
+  const confidPayload    = get('confidence_and_quality_delta') || {}
+
+  // Collect evidence from named subchunks (evidence_items_001_010, etc.)
+  const subchunkItems = chunks
+    .filter(c => c.chunkName.startsWith('evidence_items_'))
+    .flatMap(c => c.payload?.items || [])
+
+  const retrievedEvidence = subchunkItems.length > 0
+    ? subchunkItems
+    : (evidItemsPayload.items || [])
+
+  return {
+    challengedNodeId,
+    decision:               decisionPayload.decision               || 'mark_unresolved',
+    challengeAssessment:    challengePayload.challengeAssessment   || '',
+    evidenceSummary:        challengePayload.evidenceSummary       || evidSumPayload.text || '',
+    evidenceNeeded:         decisionPayload.evidenceNeeded         || '',
+    confidenceChangeReason: confidPayload.confidenceChangeReason  || evidSumPayload.confidenceChangeReason || '',
+    qualityDelta:           confidPayload.qualityDelta             || defaultQualityDelta(),
+    retrievedEvidence,
+    inlineCitations:        [],
+    suggestedResearchQueries: decisionPayload.suggestedResearchQueries || [],
+    revisedNode:            revisedPayload                         || null,
+    updatedDownstream:      revisedPayload?.updatedDownstream      || [],
+    preservedDownstreamIds: revisedPayload?.preservedDownstreamIds || [],
+  }
+}
+
 // ── Stage 2 response classifier ───────────────────────────────────────────────
 //
 // Returns: 'valid' | 'pressure_test_fallback' | 'malformed'
@@ -11,8 +72,7 @@
 // 'malformed'             — unparseable, null, or missing all Stage 2 keys; save raw + error
 //
 const STAGE2_REQUIRED_KEYS = [
-  'summary', 'evidenceConsolidation', 'refinedAssertions',
-  'competitorMap', 'emergingEntrants', 'adjacencyOpportunities',
+  'strategicThemes', 'readinessAssessment', 'opportunityModels', 'nextActions',
 ]
 
 export function classifyStage2Response(data) {
@@ -90,7 +150,8 @@ export function computeDiff(originalNodes, ptResult) {
       }
     }
   } else {
-    // preserve_original, mark_unresolved, retrieval_failed — no statement changes
+    // preserve_original, mark_unresolved, retrieval_failed,
+    // assessment_truncated, assessment_parse_failed — no statement changes
     for (const orig of originalNodes) {
       preservedNodes.push(orig)
     }
@@ -301,28 +362,31 @@ export function computeStage3ContextHash(session) {
 export function computePivotRecommendations(session) {
   const nodes  = session.stage1?.nodes || []
   const stage2 = session.stage2 || {}
-  const cm     = stage2.contradictionMap       || []
-  const eq     = stage2.emergingEntrants        || []
-  const uq     = stage2.unresolvedQuestions     || []
-  const comp   = stage2.competitorMap           || []
-  const adj    = stage2.adjacencyOpportunities  || []
+  // Support both old schema (contradictionMap) and new schema (contradictionAnalysis)
+  const cm     = stage2.contradictionAnalysis   || stage2.contradictionMap       || []
+  const scen   = stage2.scenarioModels          || []
+  const gaps   = stage2.capabilityGaps          || []
+  const opp    = stage2.opportunityModels       || stage2.adjacencyOpportunities  || []
+  const risks  = stage2.riskModels              || []
 
   const scores = {
     contextual_competition: (
-      (comp.length > 0                                                          ? 2 : 0) +
-      (cm.some(c => c.tensionType === 'strategic_inconsistency')                ? 1 : 0) +
+      (scen.length > 0                                                          ? 2 : 0) +
+      (cm.some(c => c.tensionType === 'strategic_inconsistency' ||
+                    c.description?.toLowerCase().includes('competi'))           ? 1 : 0) +
       (nodes.filter(n => n.type === 'opportunity').length >= 2                  ? 1 : 0)
     ),
     operational_constraints: (
       (nodes.some(n => n.type === 'constraint' || n.type === 'risk')            ? 2 : 0) +
-      (cm.some(c => ['capability_constraint', 'compliance_constraint']
-                     .includes(c.tensionType))                                  ? 2 : 0) +
-      (adj.some(a => a.risks)                                                   ? 1 : 0)
+      (risks.length > 0                                                         ? 2 : 0) +
+      (opp.some(a => a.risks || a.complexity === 'high')                        ? 1 : 0)
     ),
     adoption_dynamics: (
       (nodes.filter(n => n.type === 'assumption').length >= 2                   ? 1 : 0) +
-      (cm.some(c => c.tensionType === 'business_model_tension')                 ? 2 : 0) +
-      (eq.length > 0                                                            ? 1 : 0)
+      (cm.some(c => c.tensionType === 'business_model_tension' ||
+                    c.description?.toLowerCase().includes('adoption'))          ? 2 : 0) +
+      (scen.some(s => s.title?.toLowerCase().includes('adoption') ||
+                      s.drivers?.some(d => /adopt|chang|resist/i.test(d)))     ? 1 : 0)
     ),
     business_model_pressures: (
       (cm.some(c => ['pricing_conflict', 'business_model_tension']
@@ -330,11 +394,12 @@ export function computePivotRecommendations(session) {
       (nodes.some(n => /revenue|pric|subscri|fee|model/i.test(n.statement))    ? 1 : 0)
     ),
     emerging_disruption: (
-      (eq.length > 0                                                            ? 2 : 0) +
-      (uq.length >= 3                                                           ? 1 : 0)
+      (scen.some(s => s.title?.toLowerCase().includes('disrupt') ||
+                      s.drivers?.some(d => /technolog|disrupt|emerg/i.test(d))) ? 2 : 0) +
+      (gaps.length >= 2                                                          ? 1 : 0)
     ),
     adjacent_capabilities: (
-      (adj.length > 0                                                           ? 2 : 0)
+      (opp.length > 0                                                            ? 2 : 0)
     ),
   }
 
@@ -385,6 +450,7 @@ export function buildStage3ContextPacket(session) {
   // Stage 2 user-accepted refinements — NOT reflected in Stage 1 nodes (lineage preserved).
   // Stage 3 treats these as high-trust downstream refinements: revised statement supersedes
   // the original for synthesis; original is included for lineage only.
+  // New schema (v2) has no refinedAssertions — graceful fallback to empty array.
   const acceptedRefinements = (stage2.refinedAssertions || [])
     .filter(r => r.userStatus === 'accepted' || r.userStatus === 'refined')
     .map(r => ({
@@ -396,6 +462,24 @@ export function buildStage3ContextPacket(session) {
       reason:            r.reason            || '',
     }))
 
+  // Resolve fields from new schema (v2) with fallback to old schema (v1) for existing sessions
+  const contradictions = (stage2.contradictionAnalysis || stage2.contradictionMap || []).slice(0, 4)
+  const adjacencies    = (stage2.opportunityModels     || stage2.adjacencyOpportunities || []).slice(0, 3)
+  const openQs         = [
+    ...(session.stage1?.openQuestions || []),
+    ...(stage2.unresolvedQuestions    || []),
+    ...(stage2.capabilityGaps || []).map(g => g.gap || '').filter(Boolean),
+  ].slice(0, 5)
+
+  // stage2Summary: prefer readinessAssessment.recommendation for new schema, fall back to summary.whatChanged
+  const stage2Summary = stage2.readinessAssessment?.recommendation
+    || stage2.summary?.whatChanged
+    || stage2.summary
+    || null
+
+  // stage3ReadinessSummary: new schema stores this as readinessAssessment; old schema has the full object
+  const stage3ReadinessSummary = stage2.readinessAssessment || stage2.stage3ReadinessSummary || null
+
   return {
     entity:                 session.entity,
     intent:                 session.intent,
@@ -403,19 +487,21 @@ export function buildStage3ContextPacket(session) {
     inferredPatterns:       (session.stage1?.inferredPatterns || []).slice(0, 3),
     acceptedNodes,
     refinedNodes,
-    stage2Summary:          stage2.summary || null,
-    evidenceItems:          (stage2.evidenceConsolidation   || []).slice(0, 5),
-    competitors:            (stage2.competitorMap            || []).slice(0, 3),
-    entrants:               (stage2.emergingEntrants         || []).slice(0, 3),
-    contradictions:         (stage2.contradictionMap         || []).slice(0, 4),
-    adjacencies:            (stage2.adjacencyOpportunities   || []).slice(0, 3),
-    openQuestions:          [
-      ...(session.stage1?.openQuestions || []),
-      ...(stage2.unresolvedQuestions    || []),
-    ].slice(0, 5),
-    stage3ReadinessSummary: stage2.stage3ReadinessSummary || null,
+    stage2Summary,
+    evidenceItems:          (stage2.evidenceConsolidation || []).slice(0, 5),
+    competitors:            (stage2.competitorMap         || []).slice(0, 3),
+    entrants:               (stage2.emergingEntrants       || []).slice(0, 3),
+    contradictions,
+    adjacencies,
+    openQuestions:          openQs,
+    stage3ReadinessSummary,
     acceptedPivotProposals,
     acceptedRefinements,
+    // New v2 fields passed through for downstream stages that learn to use them
+    strategicThemes:        (stage2.strategicThemes        || []).slice(0, 5),
+    decisionFrameworks:     (stage2.decisionFrameworks     || []).slice(0, 4),
+    riskModels:             (stage2.riskModels             || []).slice(0, 4),
+    opportunityModels:      (stage2.opportunityModels      || []).slice(0, 5),
   }
 }
 
@@ -451,23 +537,22 @@ function s2ImpactSummary(key, current, proposed, artifactType) {
     return `${newLen} items — content updated, count unchanged`
   }
   return ({
-    summary:                'Strategic framing updated based on new Stage 1 basis',
-    stage3ReadinessSummary: 'Stage 3 readiness assessment updated',
+    readinessAssessment: 'Readiness assessment updated based on new Stage 1 basis',
   })[key] || 'Content updated based on new Stage 1 basis'
 }
 
 export function buildStage2Comparison(currentStage2, candidateStage2) {
   const sections = [
-    { key: 'summary',                label: 'Stage 2 Summary',           artifactType: 'object' },
-    { key: 'evidenceConsolidation',  label: 'Evidence Consolidation',    artifactType: 'array'  },
-    { key: 'competitorMap',          label: 'Competitor Map',            artifactType: 'array'  },
-    { key: 'emergingEntrants',       label: 'Emerging Entrants',         artifactType: 'array'  },
-    { key: 'contradictionMap',       label: 'Contradiction Map',         artifactType: 'array'  },
-    { key: 'adjacencyOpportunities', label: 'Adjacency Opportunities',   artifactType: 'array'  },
-    { key: 'refinedAssertions',      label: 'Refined Assertions',        artifactType: 'array'  },
-    { key: 'unresolvedQuestions',    label: 'Unresolved Questions',      artifactType: 'array'  },
-    { key: 'recommendedNextActions', label: 'Recommended Next Actions',  artifactType: 'array'  },
-    { key: 'stage3ReadinessSummary', label: 'Stage 3 Readiness Summary', artifactType: 'object' },
+    { key: 'strategicThemes',          label: 'Strategic Themes',           artifactType: 'array'  },
+    { key: 'decisionFrameworks',       label: 'Decision Frameworks',        artifactType: 'array'  },
+    { key: 'scenarioModels',           label: 'Scenario Models',            artifactType: 'array'  },
+    { key: 'organizationalImplications', label: 'Organizational Implications', artifactType: 'array' },
+    { key: 'capabilityGaps',           label: 'Capability Gaps',            artifactType: 'array'  },
+    { key: 'contradictionAnalysis',    label: 'Contradiction Analysis',     artifactType: 'array'  },
+    { key: 'riskModels',               label: 'Risk Models',                artifactType: 'array'  },
+    { key: 'opportunityModels',        label: 'Opportunity Models',         artifactType: 'array'  },
+    { key: 'nextActions',              label: 'Next Actions',               artifactType: 'array'  },
+    { key: 'readinessAssessment',      label: 'Readiness Assessment',       artifactType: 'object' },
   ]
 
   const artifacts = []
@@ -583,9 +668,9 @@ export function getReconcileImpactedSections(changes) {
   if (!changes || changes.length === 0) return []
 
   const ALL_SECTIONS = [
-    'summary', 'evidenceConsolidation', 'competitorMap', 'emergingEntrants',
-    'contradictionMap', 'adjacencyOpportunities', 'refinedAssertions',
-    'unresolvedQuestions', 'recommendedNextActions', 'stage3ReadinessSummary',
+    'strategicThemes', 'decisionFrameworks', 'scenarioModels',
+    'organizationalImplications', 'capabilityGaps', 'contradictionAnalysis',
+    'riskModels', 'opportunityModels', 'nextActions', 'readinessAssessment',
   ]
 
   const hasStructural = changes.some(c => c.changeType === 'added' || c.changeType === 'removed')
@@ -594,20 +679,20 @@ export function getReconcileImpactedSections(changes) {
   const sections = new Set()
   for (const c of changes.filter(ch => ch.changeType === 'modified')) {
     if (c.statementChanged)  {
-      sections.add('summary')
-      sections.add('evidenceConsolidation')
-      sections.add('refinedAssertions')
-      sections.add('contradictionMap')
-      sections.add('stage3ReadinessSummary')
+      sections.add('strategicThemes')
+      sections.add('decisionFrameworks')
+      sections.add('contradictionAnalysis')
+      sections.add('riskModels')
+      sections.add('readinessAssessment')
     }
     if (c.confidenceChanged) {
-      sections.add('evidenceConsolidation')
-      sections.add('stage3ReadinessSummary')
+      sections.add('capabilityGaps')
+      sections.add('readinessAssessment')
     }
     if (c.statusChanged) {
-      sections.add('refinedAssertions')
-      sections.add('unresolvedQuestions')
-      sections.add('recommendedNextActions')
+      sections.add('opportunityModels')
+      sections.add('nextActions')
+      sections.add('readinessAssessment')
     }
   }
 

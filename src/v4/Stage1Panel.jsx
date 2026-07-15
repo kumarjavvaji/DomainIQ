@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import NodeCard from './NodeCard'
 import DiffView from './DiffView'
 import { policyLabel } from '../v4utils'
@@ -7,6 +7,7 @@ export default function Stage1Panel({
   session,
   diff,
   regenerating,
+  isRefining,
   onNodeStatusChange,
   onChallengeClick,
   onRegenNode,
@@ -15,9 +16,12 @@ export default function Stage1Panel({
   onDiscardDiff,
   onRunStage2,
   onViewStage2,
+  onRefine,
+  onClearRefinement,
 }) {
   const { stage1, generationPolicy, entity, intent } = session
   const nodes = stage1?.nodes || []
+  const refinementLayer = stage1?.refinementLayer || null
 
   // Auto-scroll to assessment panel whenever a new diff arrives
   useEffect(() => {
@@ -31,6 +35,16 @@ export default function Stage1Panel({
   const rejected     = nodes.filter(n => n.userStatus === 'rejected').length
   const needsReview  = nodes.filter(n => n.userStatus === 'needs_review').length
   const pending      = nodes.filter(n => n.userStatus === 'pending').length
+
+  // Sort nodes by refinement rank when active; preserve original array order otherwise
+  const sortedNodes = useMemo(() => {
+    if (!refinementLayer) return nodes
+    return [...nodes].sort((a, b) => {
+      const ra = refinementLayer.nodeOverrides?.[a.id]?.rank ?? 999
+      const rb = refinementLayer.nodeOverrides?.[b.id]?.rank ?? 999
+      return ra - rb
+    })
+  }, [nodes, refinementLayer])
 
   return (
     <div style={{ maxWidth: 720, padding: 16 }}>
@@ -84,6 +98,14 @@ export default function Stage1Panel({
         </span>
       </div>
 
+      {/* Directional refinement bar */}
+      <DirectionalRefinementBar
+        refinementLayer={refinementLayer}
+        isRefining={isRefining}
+        onRefine={onRefine}
+        onClear={onClearRefinement}
+      />
+
       {/* DiffView fallback: rendered above the list only when challengedNodeId
           is null or does not match any node (e.g. synthetic retrieval_failed). */}
       {diff && !nodes.some(n => n.id === diff._ptResult?.challengedNodeId) && (
@@ -94,23 +116,27 @@ export default function Stage1Panel({
 
       {/* Node list — assessment panel rendered directly below the challenged node */}
       <div style={{ marginBottom: 14 }}>
-        {nodes.map(node => (
-          <React.Fragment key={node.id}>
-            <NodeCard
-              node={node}
-              allNodes={nodes}
-              onStatusChange={onNodeStatusChange}
-              onChallengeClick={onChallengeClick}
-              onRegenClick={onRegenNode}
-              onNeedsReviewClick={onNeedsReviewClick}
-            />
-            {diff && diff._ptResult?.challengedNodeId === node.id && (
-              <div id="pt-assessment-panel">
-                <DiffView diff={diff} onAccept={onAcceptDiff} onDiscard={onDiscardDiff} />
-              </div>
-            )}
-          </React.Fragment>
-        ))}
+        {sortedNodes.map(node => {
+          const override = refinementLayer?.nodeOverrides?.[node.id] || null
+          return (
+            <React.Fragment key={node.id}>
+              <NodeCard
+                node={node}
+                allNodes={nodes}
+                refinementOverride={override}
+                onStatusChange={onNodeStatusChange}
+                onChallengeClick={onChallengeClick}
+                onRegenClick={onRegenNode}
+                onNeedsReviewClick={onNeedsReviewClick}
+              />
+              {diff && diff._ptResult?.challengedNodeId === node.id && (
+                <div id="pt-assessment-panel">
+                  <DiffView diff={diff} onAccept={onAcceptDiff} onDiscard={onDiscardDiff} />
+                </div>
+              )}
+            </React.Fragment>
+          )
+        })}
       </div>
 
       {/* Open questions */}
@@ -186,6 +212,171 @@ export default function Stage1Panel({
     </div>
   )
 }
+
+// ── DirectionalRefinementBar ──────────────────────────────────────────────────
+
+function DirectionalRefinementBar({ refinementLayer, isRefining, onRefine, onClear }) {
+  const [editing, setEditing]   = useState(false)
+  const [prompt, setPrompt]     = useState('')
+  const [hideSuppressed, setHideSuppressed] = useState(false)
+
+  function handleSubmit() {
+    const trimmed = prompt.trim()
+    if (!trimmed || isRefining) return
+    onRefine(trimmed)
+    setEditing(false)
+  }
+
+  function handleEdit() {
+    setPrompt(refinementLayer?.prompt || '')
+    setEditing(true)
+  }
+
+  function handleClear() {
+    onClear()
+    setPrompt('')
+    setEditing(false)
+  }
+
+  // Active direction chip
+  if (refinementLayer && !editing) {
+    const overrides  = refinementLayer.nodeOverrides || {}
+    const ids        = Object.keys(overrides)
+    const primary    = ids.filter(id => overrides[id].emphasis === 'primary').length
+    const suppressed = ids.filter(id => overrides[id].emphasis === 'suppressed').length
+
+    return (
+      <div style={{
+        background: 'rgba(124,108,250,.06)', border: '1px solid rgba(124,108,250,.3)',
+        borderRadius: 'var(--r)', padding: '10px 14px', marginBottom: 14,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+          <i className="ti ti-adjustments-horizontal" style={{ fontSize: 13, color: 'var(--a2)', marginTop: 1, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 9, fontFamily: 'var(--fm)', fontWeight: 600, color: 'var(--a2)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 4 }}>
+              Direction active
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.55, marginBottom: 6 }}>
+              "{refinementLayer.prompt}"
+            </div>
+            {refinementLayer.refinementSummary && (
+              <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.55, marginBottom: 6, fontStyle: 'italic' }}>
+                {refinementLayer.refinementSummary}
+              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              {primary    > 0 && <Chip label={`${primary} primary`}    color="var(--a2)" />}
+              {suppressed > 0 && <Chip label={`${suppressed} suppressed`} color="var(--muted)" />}
+              <button
+                onClick={() => setHideSuppressed(v => !v)}
+                style={{
+                  fontSize: 9, fontFamily: 'var(--fm)', padding: '2px 7px',
+                  border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+                  background: hideSuppressed ? 'rgba(124,108,250,.1)' : 'transparent',
+                  color: 'var(--muted)',
+                }}
+              >
+                {hideSuppressed ? 'Show suppressed' : 'Hide suppressed'}
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <button
+              onClick={handleEdit}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 9px',
+                border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+                background: 'transparent', color: 'var(--muted)',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <i className="ti ti-pencil" style={{ fontSize: 9 }} /> Edit
+            </button>
+            <button
+              onClick={handleClear}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 9px',
+                border: '1px solid rgba(248,113,113,.3)', borderRadius: 4, cursor: 'pointer',
+                background: 'rgba(248,113,113,.06)', color: '#f87171',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <i className="ti ti-x" style={{ fontSize: 9 }} /> Clear
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Entry / edit mode
+  if (editing || !refinementLayer) {
+    return (
+      <div style={{
+        background: 'var(--s2)', border: '1px solid var(--border)',
+        borderRadius: 'var(--r)', padding: '10px 14px', marginBottom: 14,
+      }}>
+        <div style={{ fontSize: 9, fontFamily: 'var(--fm)', fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <i className="ti ti-adjustments-horizontal" style={{ fontSize: 10 }} />
+          Refine node direction
+        </div>
+        <textarea
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          placeholder={`e.g. "Lean toward CIAM relevance." · "Focus on product strategy." · "Prioritize competitor gaps." · "Emphasize interview talking points."`}
+          rows={2}
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            fontSize: 11, fontFamily: 'var(--fm)', color: 'var(--text)',
+            background: 'var(--surface)', border: '1px solid var(--border2)',
+            borderRadius: 5, padding: '7px 10px', resize: 'vertical',
+            outline: 'none', lineHeight: 1.55,
+          }}
+          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit() }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+          <button
+            onClick={handleSubmit}
+            disabled={!prompt.trim() || isRefining}
+            style={{
+              fontSize: 10, fontFamily: 'var(--fm)', fontWeight: 600,
+              padding: '5px 14px', borderRadius: 5, cursor: (!prompt.trim() || isRefining) ? 'not-allowed' : 'pointer',
+              background: (!prompt.trim() || isRefining) ? 'var(--s2)' : 'var(--a2)',
+              color: (!prompt.trim() || isRefining) ? 'var(--muted)' : '#fff',
+              border: `1px solid ${(!prompt.trim() || isRefining) ? 'var(--border)' : 'var(--a2)'}`,
+              opacity: (!prompt.trim() || isRefining) ? 0.6 : 1,
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}
+          >
+            {isRefining
+              ? <><i className="ti ti-loader-2" style={{ animation: 'spin 1s linear infinite', fontSize: 10 }} /> Refining…</>
+              : <><i className="ti ti-adjustments-horizontal" style={{ fontSize: 10 }} /> Apply direction</>
+            }
+          </button>
+          {editing && (
+            <button
+              onClick={handleClear}
+              style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '4px 10px',
+                border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+                background: 'transparent', color: 'var(--muted)',
+              }}
+            >
+              Cancel &amp; clear
+            </button>
+          )}
+          <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginLeft: 4 }}>
+            ⌘↵ to apply
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  return null
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function Chip({ label, color }) {
   return (

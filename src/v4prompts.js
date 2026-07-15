@@ -295,6 +295,158 @@ function getNodeTypeGuidance(type) {
   }
 }
 
+// ─── Chunked assessment prompt builder ───────────────────────────────────────
+//
+// Used when the full pressure-test response was truncated or unparseable.
+// Each call generates exactly one JSON object covering one named chunk.
+// No tools/search references — evidence is passed inline from rawSearchBlocks.
+
+function formatRawSearchBlocks(rawSearchBlocks) {
+  if (!rawSearchBlocks?.length) return '  (no search results available)'
+  const lines = []
+  rawSearchBlocks.forEach((block, bi) => {
+    if (block.queries?.length) {
+      lines.push(`Search queries: ${block.queries.join(', ')}`)
+    }
+    const items = Array.isArray(block.content) ? block.content : []
+    items.forEach((item, ii) => {
+      const url = item.url || ''
+      const title = item.title || ''
+      if (url || title) {
+        lines.push(`[${bi + 1}.${ii + 1}] ${title}${url ? ` — ${url}` : ''}`)
+      }
+      const snippet = item.encrypted_content || item.content || item.text || ''
+      if (snippet) lines.push(`  ${String(snippet).slice(0, 300)}`)
+    })
+  })
+  return lines.join('\n') || '  (no structured results parsed)'
+}
+
+const CHUNK_INSTRUCTIONS = {
+  decision_summary: `Return ONLY the top-level decision fields.
+Schema:
+{
+  "decision": "preserve_original|revise_claim|mark_unresolved|retrieval_failed",
+  "challengedNodeId": "<nodeId>",
+  "evidenceNeeded": "<string — what additional evidence would resolve remaining uncertainty>",
+  "suggestedResearchQueries": ["<query>"]
+}`,
+
+  challenge_assessment: `Return ONLY the challenge assessment and evidence summary text.
+Schema:
+{
+  "challengeAssessment": "<2-4 sentences: what the challenge claims, what evidence says about both sides, why you reached your decision>",
+  "evidenceSummary": "<1-3 sentences: what was actually found, what supported original, what supported challenge, what was ambiguous>"
+}`,
+
+  revised_node: `Return ONLY the revised node. Only generated when decision is revise_claim.
+Schema:
+{
+  "id": "<challengedNodeId>",
+  "type": "<same node type>",
+  "statement": "<revised statement — narrower, more precise, or better segmented>",
+  "confidence": "high|medium|low",
+  "evidence_type": "verified_fact|user_provided|inferred_strategy|hypothesis",
+  "dependsOn": [],
+  "changeReason": "<one sentence: what changed and why it is more defensible>",
+  "updatedDownstream": [],
+  "preservedDownstreamIds": []
+}`,
+
+  evidence_summary: `Return ONLY the evidence summary and confidence change reason.
+Schema:
+{
+  "text": "<1-3 sentence evidence summary>",
+  "confidenceChangeReason": "<why confidence stayed the same or changed>"
+}`,
+
+  evidence_items: `Return ONLY the retrieved evidence items structured from the search results above.
+Keep each snippet under 60 words. Assign sequential IDs starting at e1. Include at most 8 items.
+If there are too many results to fit in one response, return:
+{ "needsSubchunks": true, "subchunkPlan": ["evidence_items_001_005", "evidence_items_006_010"] }
+Otherwise return:
+{
+  "items": [
+    {
+      "id": "e1",
+      "type": "direct_evidence|contradictory_evidence|competitor_analogy|pattern_inference|unresolved_hypothesis",
+      "title": "<page title>",
+      "url": "<exact URL from search result>",
+      "publisher": "<domain or publisher>",
+      "snippet": "<verbatim or close-paraphrase, max 60 words>",
+      "supportsNodeIds": [],
+      "contradictsNodeIds": [],
+      "confidence": "high|medium|low"
+    }
+  ]
+}`,
+
+  confidence_and_quality_delta: `Return ONLY the confidence change reason and quality delta.
+Schema:
+{
+  "confidenceChangeReason": "<why confidence stayed the same or changed>",
+  "qualityDelta": {
+    "improvedPrecision": true|false,
+    "reducedOvergeneralization": true|false,
+    "improvedSegmentation": true|false,
+    "improvedOperationalPlausibility": true|false,
+    "reducedConfidenceAppropriately": true|false,
+    "preservedStrongOriginalReasoning": true|false,
+    "surfacedEvidenceGap": true|false,
+    "improvedDecisionUsefulness": true|false,
+    "notes": "<one sentence on net quality change, or empty string>"
+  }
+}`,
+}
+
+export function buildAssessmentChunkPrompt({
+  challengedNode,
+  rawSearchBlocks,
+  directDeps,
+  directDownstream,
+  intent,
+  mode,
+  chunkName,
+  sequence,
+}) {
+  const evidenceText = formatRawSearchBlocks(rawSearchBlocks)
+  const depsText = (directDeps || []).map(n => `  [${n.id}] ${n.type}: ${n.statement}`).join('\n') || '  None'
+  const downText = (directDownstream || []).map(n => `  [${n.id}] ${n.statement}`).join('\n') || '  None'
+  const instructions = CHUNK_INSTRUCTIONS[chunkName] || `Return a JSON object for chunk: ${chunkName}`
+
+  return `You are generating chunk ${sequence + 1} of a pressure-test assessment.
+
+IMPORTANT CONSTRAINTS:
+- Use ONLY the evidence listed below. Do not call search. Do not perform retrieval.
+- Return exactly one valid JSON object. No markdown fences. No prose before or after.
+- This chunk is: ${chunkName}
+
+ENTITY: "${intent?.what || ''}" (${intent?.why || ''})
+ANALYST ROLE: ${intent?.role || ''}
+CHALLENGE MODE: ${mode}
+
+CHALLENGED NODE:
+  ID: ${challengedNode.id}
+  Type: ${challengedNode.type}
+  Statement: "${challengedNode.statement}"
+  Confidence: ${challengedNode.confidence}
+  Challenge preset: "${challengedNode.userPreset || 'none'}"
+  Challenge note: "${challengedNode.userNote || 'none'}"
+
+DIRECT DEPENDENCIES (context only):
+${depsText}
+
+DIRECT DOWNSTREAM (context only):
+${downText}
+
+RETRIEVED SEARCH EVIDENCE (use only this — do not add, fabricate, or search for more):
+${evidenceText}
+
+${instructions}
+
+Return ONLY valid JSON. No markdown. No backticks. No prose.`
+}
+
 // ─── Policy block renderer ────────────────────────────────────────────────────
 
 function renderPolicy(policy) {
@@ -307,6 +459,86 @@ function renderPolicy(policy) {
 - Require explicit assumptions: ${policy.requireAssumptions ? 'yes' : 'no'}
 - Require confidence ratings: ${policy.requireConfidence ? 'yes' : 'no'}
 - Preserve accepted claims: ${policy.preserveAcceptedClaims ? 'yes' : 'no'}`
+}
+
+// ─── Stage 1 Directional Refinement ─────────────────────────────────────────
+// Applied after Stage 1 generation. Re-ranks, groups, and annotates existing
+// nodes based on a user directional prompt. Never deletes nodes.
+
+export function buildStage1RefinementPrompt({ nodes, entity, intent, directionalPrompt }) {
+  const nodeBlock = nodes.map(n => {
+    const citationStatus = resolveNodeCitationStatus(n)
+    return `  ${n.id} [${n.type}] [${n.confidence}] [${citationStatus}]: ${n.statement}`
+  }).join('\n')
+
+  return `You are a domain analysis refinement engine. The user has already generated a Stage 1 orientation graph and now wants to steer it in a specific direction.
+
+ENTITY: "${entity.name}" (${entity.type})
+INTENT ROLE: ${intent.role}
+INTENT OUTCOME: ${intent.outcome}
+
+DIRECTIONAL PROMPT (user instruction):
+"${directionalPrompt}"
+
+CURRENT NODES (id [type] [confidence] [citationStatus]):
+${nodeBlock}
+
+Your job: re-rank, group, and annotate each node based on how relevant or useful it is given the directional prompt. Do NOT delete nodes. Do NOT rewrite node statements.
+
+For each node, produce a nodeOverride entry:
+- rank: integer (1 = highest priority under this direction). Assign unique ranks.
+- emphasis: "primary" | "secondary" | "suppressed"
+  - primary: directly serves the directional goal
+  - secondary: peripherally relevant
+  - suppressed: not relevant to this direction
+- groupTag: short label grouping related nodes (e.g. "role-fit", "competitor gaps", "regulatory") — null if ungrouped
+- rankReason: one sentence explaining why this node got this rank/emphasis under the directional prompt
+- refinementNote: optional one sentence noting how the user could use or strengthen this node for the stated direction — null if not applicable
+- emphasisIsCitationBacked: true if the node has citation support that backs the emphasis decision, false if emphasis is inferred
+
+Return ONLY valid JSON with no markdown, no backticks, no commentary:
+{
+  "directionalPrompt": "${directionalPrompt.replace(/"/g, '\\"')}",
+  "refinementSummary": "1-2 sentence summary of how the direction changed the view",
+  "nodeOverrides": {
+    "n1": {
+      "rank": 1,
+      "emphasis": "primary",
+      "groupTag": "role-fit",
+      "rankReason": "...",
+      "refinementNote": "...",
+      "emphasisIsCitationBacked": false
+    }
+  }
+}`
+}
+
+function resolveNodeCitationStatus(node) {
+  if (node.citationStatus) return node.citationStatus
+  const citations = node.latestReview?.citations
+    || (node.reviewHistory || []).slice().reverse().find(e => e.citations?.length > 0)?.citations
+    || []
+  if (citations.length === 0) return 'uncited'
+  const levels = citations.map(c => c.supportsClaim)
+  if (levels.some(l => l === 'direct'))  return 'cited'
+  if (levels.some(l => l === 'partial')) return 'weak'
+  return 'inferred'
+}
+
+export const MOCK_STAGE1_REFINEMENT = {
+  directionalPrompt: 'Lean this toward CIAM relevance.',
+  refinementSummary: 'Filtered and re-ranked the orientation graph to surface nodes most relevant to customer identity and access management context. Regulatory, persona, and ecosystem nodes moved to primary; revenue model and growth hypothesis suppressed.',
+  nodeOverrides: {
+    n1: { rank: 3, emphasis: 'secondary', groupTag: 'market-context', rankReason: 'Market fragmentation context is useful background but not directly CIAM-relevant.', refinementNote: 'Could be strengthened by noting how identity data is siloed across community bank systems.', emphasisIsCitationBacked: false },
+    n2: { rank: 4, emphasis: 'secondary', groupTag: 'market-context', rankReason: 'Broad platform description; useful orientation but not CIAM-specific.', refinementNote: null, emphasisIsCitationBacked: false },
+    n3: { rank: 7, emphasis: 'suppressed', groupTag: null, rankReason: 'Revenue model mechanics are not relevant to a CIAM-focused investigation.', refinementNote: null, emphasisIsCitationBacked: false },
+    n4: { rank: 1, emphasis: 'primary', groupTag: 'persona', rankReason: 'CFO/COO persona maps directly to CIAM buyer profiles who own identity governance decisions.', refinementNote: 'Consider how this persona overlaps with the CISO/CTO in identity-adjacent decisions.', emphasisIsCitationBacked: false },
+    n5: { rank: 5, emphasis: 'secondary', groupTag: 'go-to-market', rankReason: 'Sales motion is relevant context but secondary to CIAM capability gaps.', refinementNote: null, emphasisIsCitationBacked: false },
+    n6: { rank: 2, emphasis: 'primary', groupTag: 'capability-gap', rankReason: 'Explainability gap directly parallels CIAM audit trail and transparency requirements.', refinementNote: 'Frame as identity audit readiness gap — strong CIAM positioning angle.', emphasisIsCitationBacked: false },
+    n7: { rank: 6, emphasis: 'secondary', groupTag: 'adoption-risk', rankReason: 'Change management risk is relevant but generic; lower CIAM specificity.', refinementNote: null, emphasisIsCitationBacked: false },
+    n8: { rank: 1, emphasis: 'primary', groupTag: 'regulatory', rankReason: 'FDIC/OCC regulatory constraints are the core driver of CIAM requirements in banking.', refinementNote: 'Emphasize identity verification and access audit requirements under these frameworks.', emphasisIsCitationBacked: false },
+    n9: { rank: 8, emphasis: 'suppressed', groupTag: null, rankReason: 'Upmarket expansion hypothesis is speculative and not CIAM-relevant at orientation stage.', refinementNote: null, emphasisIsCitationBacked: false },
+  },
 }
 
 // ─── Demo mock data ───────────────────────────────────────────────────────────
@@ -555,7 +787,11 @@ export const MOCK_PRESSURE_TEST_RESULT_PRESERVE = {
   rawSearchBlocks: [],
 }
 
-// ─── Stage 2 — Research Expansion & Evidence Consolidation ───────────────────
+// ─── Stage 2 — Synthesis & Reasoning Artifact Generation ─────────────────────
+//
+// Stage 2 transforms validated Stage 1 knowledge into higher-value reasoning artifacts.
+// It is NOT a summarization or evidence-consolidation stage.
+// Every artifact must synthesize multiple Stage 1 nodes into something new.
 
 export function buildStage2Prompt({
   entity, intent, policy,
@@ -586,9 +822,10 @@ export function buildStage2Prompt({
     ? inferredPatterns.map(p => `  - ${p.title}: ${p.insight}`).join('\n')
     : '  None.'
 
-  return `You are a rigorous strategic analyst conducting Stage 2 research expansion and evidence consolidation.
+  return `You are a rigorous strategic analyst conducting Stage 2 synthesis for "${entity.name}".
 
-This is NOT a new analysis. Stage 1 has already established orientation assertions for "${entity.name}". Your job is to DEEPEN and GROUND the existing investigation — not restart it.
+PURPOSE:
+Stage 2 transforms validated Stage 1 knowledge into higher-value reasoning artifacts. It is NOT summarization or evidence consolidation. Stage 1 already performed evidence gathering. Do not repeat it.
 
 ENTITY: "${entity.name}" (${entity.type})
 ANALYST ROLE: ${intent.role}
@@ -597,147 +834,168 @@ RESEARCH INTENT: ${intent.what}${intent.why ? ' — ' + intent.why : ''}
 STAGE 1 SUMMARY:
 ${stage1Summary}
 
-ACCEPTED ASSERTIONS (preserve unless evidence materially changes them):
+ACCEPTED ASSERTIONS:
 ${acceptedBlock}
 
-REVISED ASSERTIONS (already pressure-tested):
+REVISED ASSERTIONS (pressure-tested):
 ${refinedBlock}
 
-UNRESOLVED ASSERTIONS (require evidence grounding):
+UNRESOLVED ASSERTIONS:
 ${unresolvedBlock}
 
-OPEN QUESTIONS (from Stage 1):
+OPEN QUESTIONS:
 ${questionsBlock}
 
-INFERRED ANALYTICAL PATTERNS:
+INFERRED PATTERNS:
 ${patternsBlock}
 
 ${policyBlock}
 
-STAGE 2 MISSION:
-Answer: "What current evidence, competitor behavior, emerging entrants, adjacent capabilities, and market signals strengthen, weaken, qualify, or materially reshape the Stage 1 assertions?"
+TRANSFORMATION RULE — every artifact must satisfy at least one of:
+- Combines multiple findings into a new claim
+- Derives an implication not stated in Stage 1
+- Predicts downstream consequences
+- Proposes a strategy or path
+- Identifies a decision that must be made
+- Exposes tradeoffs between competing goals
+- Identifies execution or organizational risk
+- Generates a testable scenario
+- Generates a ranked recommendation
+
+SUPPRESSION RULE — suppress an artifact entirely if:
+- Fewer than two Stage 1 findings contribute to it
+- It merely restates, paraphrases, or renames a Stage 1 assertion
+- It changes wording only without adding synthesis
+
+CROSS-LINKING — every artifact must list supportingNodeIds referencing the Stage 1 node IDs it synthesizes.
 
 RETRIEVAL STRATEGY (use web_search, max 5 queries — target 3):
-Execute 3 highly targeted searches. Stop searching once 3 or more meaningful evidence items have been retrieved. Prefer precision over coverage — unused search budget preserves output token headroom for the JSON.
-Prioritize searches toward:
-1. Load-bearing assertions with low confidence or unresolved status
-2. Open questions from Stage 1
-3. Competitor behavior directly relevant to key assertions
-4. Adjacent capabilities or market movements affecting strategic direction
-5. Evidence that resolves or sharpens strategic tensions
+Search only to fill gaps that block synthesis — low-confidence nodes, open questions, decision points that need grounding. Stop searching once synthesis is unblocked. Do NOT search for generic market trends or re-gather evidence already implicit in Stage 1.
 
-Do NOT:
-- Search for generic market trends or broad landscape reports
-- Fabricate competitors, sources, or acquisition logic
-- Cite sources not retrieved in this session
-- Overstate certainty from limited or ambiguous results
-- Produce comprehensive market surveys
-- Include search narration, preamble, or any prose before or after the JSON output
-- Summarize every retrieved source — include only the single most relevant snippet per item
+QUALITY GATES — reject output if:
+- More than 30% of artifacts simply restate Stage 1
+- Multiple artifacts make the same point
+- Artifacts are isolated instead of cross-referenced
+- Recommendations lack supportingNodeIds
+- Confidence is omitted
+- Tradeoffs are absent where applicable
 
-CONSTRAINTS ON OUTPUT (hard limits — do not exceed):
-- evidenceConsolidation: max 3 items; max 2 sources per item
-- competitorMap: max 3
-- emergingEntrants: 3–5 items
-- adjacencyOpportunities: 3–5 items
-- refinedAssertions: max 3
-- contradictionMap: max 3
-- unresolvedQuestions: 3–5 items
-- stage3ReadinessSummary: max 3 items per array
-- recommendedNextActions: 3–5 items
-- Label/name/badge fields (name, type, refinementType, relationship, tensionType, resolution, confidenceChange): ≤5 words or enum values only.
-- Summary/label string fields (segmentFit, capabilityGaps, strategicDivergence, implications, evidenceSummary, reason, resolutionNote, whatChanged, strongestEvidence, weakestAreas, dominantTensions, likelyDirection, area): ≤20 words. Concise phrases, no paragraphs.
-- Analytical narrative fields (capability, strategicImplication, partnershipLogic, acquisitionLogic, buildVsBuy, risks): ≤60 words. Complete sentences allowed.
-- unresolvedQuestions and recommendedNextActions: ≤60 words each. Must be actionable and specific.
-- stage3ReadinessSummary items: ≤25 words each — max 3 per array. Explain the signal, do not just label it.
-- Omit a section entirely (empty array) rather than padding with weak findings.
+OUTPUT SIZE LIMITS:
+- strategicThemes: 3–5 items
+- decisionFrameworks: 2–4 items
+- scenarioModels: 2–3 items
+- organizationalImplications: 4–8 items
+- capabilityGaps: 2–4 items
+- contradictionAnalysis: 2–4 items
+- riskModels: 2–4 items
+- opportunityModels: 3–5 items
+- nextActions: 3–5 items
+- All label/title fields: ≤10 words
+- All narrative fields: ≤60 words
+- All "why it matters" / "rationale" fields: ≤40 words
+- All list item fields (drivers, risks, indicators, options): ≤15 words each, max 3 per list
+- Omit a section entirely (empty array) rather than padding with weak artifacts
 
 Return ONLY valid JSON. Output MUST begin with { and end with }. No preamble, no narration, no markdown, no backticks:
 {
-  "summary": {
-    "whatChanged": "≤20 words: what Stage 2 materially changed vs Stage 1",
-    "strongestEvidence": "≤20 words: strongest evidence found",
-    "weakestAreas": "≤20 words: what still lacks grounding",
-    "dominantTensions": "≤20 words: most important unresolved tension",
-    "likelyDirection": "≤20 words: most defensible direction — label as inference"
-  },
-  "evidenceConsolidation": [
+  "strategicThemes": [
     {
-      "nodeId": "<Stage 1 node id>",
-      "nodeStatement": "<exact original assertion>",
-      "evidenceSummary": "≤20 words: what was found and how it relates",
-      "relationship": "supports|contradicts|qualifies|unresolved",
-      "sources": [
-        {
-          "title": "page or article title",
-          "url": "exact URL from search",
-          "snippet": "verbatim excerpt — max 25 words",
-          "relationship": "supports|contradicts|qualifies"
-        }
-      ]
+      "title": "≤10 words",
+      "supportingNodeIds": ["<n1>", "<n2>"],
+      "whyItMatters": "≤40 words: synthesis of why this cluster matters beyond individual nodes",
+      "confidence": "high|medium|low",
+      "downstreamImplications": "≤40 words: what decisions or risks this theme creates downstream"
     }
   ],
-  "competitorMap": [
+  "decisionFrameworks": [
     {
-      "name": "competitor name",
-      "type": "mature|differentiated|adjacent",
-      "segmentFit": "≤15 words",
-      "capabilityGaps": "≤15 words",
-      "strategicDivergence": "≤15 words",
-      "implications": "≤15 words"
+      "title": "≤10 words — the decision to be made",
+      "question": "≤20 words — the specific decision question",
+      "options": ["≤15 words each — 2 to 3 options"],
+      "tradeoffs": "≤60 words: the core tradeoff between options",
+      "recommendedPath": "≤20 words: most defensible path given current evidence",
+      "supportingNodeIds": ["<node ids>"],
+      "confidence": "high|medium|low"
     }
   ],
-  "emergingEntrants": [
+  "scenarioModels": [
     {
-      "name": "entrant name",
-      "relevantTo": "<Stage 1 node id or open_question>",
-      "capability": "≤60 words: what this entrant actually does and why it matters here",
-      "strategicImplication": "≤60 words: specific strategic consequence for the entity under analysis"
+      "title": "≤10 words",
+      "drivers": ["≤15 words each — what makes this scenario plausible"],
+      "risks": ["≤15 words each — what could prevent or worsen it"],
+      "leadingIndicators": ["≤15 words each — signals this is unfolding"],
+      "recommendedResponse": "≤40 words: what to do now to prepare or exploit",
+      "confidence": "high|medium|low",
+      "supportingNodeIds": ["<node ids>"]
     }
   ],
-  "adjacencyOpportunities": [
+  "organizationalImplications": [
     {
-      "area": "capability or workflow area",
-      "partnershipLogic": "≤60 words: who the natural partner is, why the fit exists, and what it unlocks",
-      "acquisitionLogic": "≤60 words: why acquisition makes strategic sense and what the target would add — or null if not applicable",
-      "buildVsBuy": "≤60 words: concrete build-vs-buy-vs-partner recommendation with rationale",
-      "connectedNodeIds": ["<Stage 1 node ids>"],
-      "risks": "≤60 words: specific execution or market risks for this adjacency"
+      "function": "product|engineering|security|operations|legal|support|customer_success|executive",
+      "implication": "≤40 words: specific consequence for this function",
+      "severity": "high|medium|low",
+      "supportingNodeIds": ["<node ids>"]
     }
   ],
-  "refinedAssertions": [
+  "capabilityGaps": [
     {
-      "nodeId": "<Stage 1 node id>",
-      "refinementType": "strengthened|narrowed|qualified|weakened|contradicted|unresolved",
-      "originalStatement": "<exact original assertion text>",
-      "revisedStatement": "≤30 words — more precise or better-grounded version",
-      "reason": "≤15 words: what evidence drove this",
-      "confidenceChange": "increased|decreased|unchanged"
+      "gap": "≤10 words: name of the missing information or capability",
+      "whyItMatters": "≤40 words: not just what is missing — why it blocks something specific",
+      "blockedDecisions": ["≤15 words each — decisions that cannot be made without this"],
+      "valueOfResolving": "high|medium|low"
     }
   ],
-  "contradictionMap": [
+  "contradictionAnalysis": [
     {
-      "description": "≤20 words: what the tension is",
-      "tensionType": "evidence_conflict|strategic_inconsistency|business_model_tension|pricing_conflict|capability_constraint|compliance_constraint",
-      "nodeIds": ["<involved Stage 1 node ids>"],
-      "resolution": "unresolved|partial|resolved",
-      "resolutionNote": "≤15 words"
+      "description": "≤20 words: what the tension is between",
+      "explanations": ["≤20 words each — 2 to 3 possible explanations for why this contradiction exists"],
+      "likelihood": "high|medium|low",
+      "businessImpact": "≤30 words: strategic consequence if unresolved",
+      "followUp": "≤30 words: specific action to resolve or clarify",
+      "supportingNodeIds": ["<node ids>"]
     }
   ],
-  "unresolvedQuestions": [
-    "≤60 words: specific strategically important question with enough context to be actionable — 3 to 5 items"
+  "riskModels": [
+    {
+      "name": "≤10 words",
+      "trigger": "≤20 words: what event or condition starts the chain",
+      "propagation": "≤40 words: how the risk spreads or escalates",
+      "affectedSystems": ["≤10 words each"],
+      "customerImpact": "≤20 words",
+      "businessImpact": "≤20 words",
+      "mitigation": "≤30 words: most effective intervention point",
+      "owner": "≤10 words: who is accountable",
+      "supportingNodeIds": ["<node ids>"]
+    }
   ],
-  "stage3ReadinessSummary": {
-    "strongestThemes": ["≤25 words each — max 3: explain the signal, not just the label"],
-    "unresolvedBlockers": ["≤25 words each — max 3: explain why it blocks and what resolving it would unlock"],
-    "refinedTensions": ["≤25 words each — max 3: name the two forces in tension and the strategic consequence"],
-    "highConfidenceFindings": ["≤25 words each — max 3: state what is now well-grounded and why it matters for Stage 3"],
-    "capabilityGaps": ["≤25 words each — max 3: name the gap and why it is strategically load-bearing"],
-    "strategicImplications": ["≤25 words each — max 3: one clear implication for Stage 3 framing or focus"]
-  },
-  "recommendedNextActions": [
-    "≤60 words: specific action with rationale — what to do, why it matters, and what it would resolve — 3 to 5 items"
-  ]
+  "opportunityModels": [
+    {
+      "title": "≤10 words",
+      "businessValue": "high|medium|low",
+      "complexity": "high|medium|low",
+      "dependencies": ["≤10 words each — what must be true for this to work"],
+      "timeHorizon": "now|next|later",
+      "confidence": "high|medium|low",
+      "supportingNodeIds": ["<node ids>"],
+      "rationale": "≤50 words: why this is worth pursuing and what would unlock it"
+    }
+  ],
+  "nextActions": [
+    {
+      "action": "≤20 words: specific actionable investigation or decision",
+      "expectedInfoGain": "high|medium|low",
+      "cost": "high|medium|low",
+      "confidenceImprovement": "≤20 words: which gap or uncertainty this resolves",
+      "decisionImpact": "≤20 words: which blocked decision this unblocks"
+    }
+  ],
+  "readinessAssessment": {
+    "knowledgeMaturity": "high|medium|low",
+    "remainingUncertainty": "≤30 words: the single most important unresolved uncertainty",
+    "majorBlockers": ["≤15 words each — max 3: what prevents confident forward motion"],
+    "confidence": "high|medium|low",
+    "recommendation": "≤30 words: whether to proceed to Stage 3 and what to resolve first"
+  }
 }`
 }
 

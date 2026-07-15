@@ -132,7 +132,7 @@ export default function Stage2Panel({
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>{session.entity.name}</div>
           <div style={{ fontSize: 10, color: 'var(--muted2)', fontFamily: 'var(--fm)' }}>
-            Stage 2 — research expansion & evidence consolidation
+            Stage 2 — synthesis & reasoning artifact generation
           </div>
         </div>
         <button
@@ -159,131 +159,132 @@ export default function Stage2Panel({
         />
       )}
 
-      {/* Invalid-state banner — shown when summary is absent (truncation / wrapper drift / retrieval_failed fallback) */}
-      {!stage2.summary && (
+      {/* Invalid-state banner — shown when key synthesis sections are absent */}
+      {!stage2.strategicThemes && !stage2.readinessAssessment && (
         <InvalidStage2Banner stage2={stage2} onRerun={onRerunStage2} />
       )}
 
-      {/* 1 — Summary */}
-      {stage2.summary && (
-        <Section title="Stage 2 summary" icon="ti-chart-bar" accentColor="var(--accent)">
-          <SummarySection summary={stage2.summary} s2Ctx={s2Ctx} />
-        </Section>
-      )}
-
-      {/* 2 — Evidence Consolidation */}
-      {stage2.evidenceConsolidation?.length > 0 && (
+      {/* 1 — Strategic Themes */}
+      {stage2.strategicThemes?.length > 0 && (
         <Section
-          title="Evidence consolidation"
-          icon="ti-list-search"
-          count={stage2.evidenceConsolidation.length}
+          title="Strategic themes"
+          icon="ti-bulb"
+          count={stage2.strategicThemes.length}
           accentColor="var(--accent)"
         >
-          <EvidenceSection items={stage2.evidenceConsolidation} s2Ctx={s2Ctx} />
+          <StrategicThemesSection items={stage2.strategicThemes} s2Ctx={s2Ctx} />
         </Section>
       )}
 
-      {/* 3 — Competitor Map */}
-      {stage2.competitorMap?.length > 0 && (
+      {/* 2 — Decision Frameworks */}
+      {stage2.decisionFrameworks?.length > 0 && (
         <Section
-          title="Competitor maturity map"
-          icon="ti-git-compare"
-          count={stage2.competitorMap.length}
+          title="Decision frameworks"
+          icon="ti-route"
+          count={stage2.decisionFrameworks.length}
           accentColor="var(--a4)"
         >
-          <CompetitorSection items={stage2.competitorMap} s2Ctx={s2Ctx} />
+          <DecisionFrameworksSection items={stage2.decisionFrameworks} s2Ctx={s2Ctx} />
         </Section>
       )}
 
-      {/* 4 — Emerging Entrants */}
-      {stage2.emergingEntrants?.length > 0 && (
+      {/* 3 — Scenario Models */}
+      {stage2.scenarioModels?.length > 0 && (
         <Section
-          title="Emerging entrants"
-          icon="ti-rocket"
-          count={stage2.emergingEntrants.length}
+          title="Scenario models"
+          icon="ti-timeline"
+          count={stage2.scenarioModels.length}
           accentColor="var(--a2)"
           defaultOpen={false}
         >
-          <EntrantsSection items={stage2.emergingEntrants} s2Ctx={s2Ctx} />
+          <ScenarioModelsSection items={stage2.scenarioModels} s2Ctx={s2Ctx} />
         </Section>
       )}
 
-      {/* 5 — Adjacency Opportunities */}
-      {stage2.adjacencyOpportunities?.length > 0 && (
+      {/* 4 — Organizational Implications */}
+      {stage2.organizationalImplications?.length > 0 && (
         <Section
-          title="Adjacency & acquisition opportunities"
-          icon="ti-arrows-join"
-          count={stage2.adjacencyOpportunities.length}
+          title="Organizational implications"
+          icon="ti-building"
+          count={stage2.organizationalImplications.length}
           accentColor="var(--a2)"
           defaultOpen={false}
         >
-          <AdjacencySection items={stage2.adjacencyOpportunities} s2Ctx={s2Ctx} />
+          <OrgImplicationsSection items={stage2.organizationalImplications} s2Ctx={s2Ctx} />
         </Section>
       )}
 
-      {/* 6 — Refined Assertions */}
-      {stage2.refinedAssertions?.length > 0 && (
+      {/* 5 — Capability Gaps */}
+      {stage2.capabilityGaps?.length > 0 && (
         <Section
-          title="Refined assertions"
-          icon="ti-pencil"
-          count={stage2.refinedAssertions.length}
+          title="Capability gaps"
+          icon="ti-alert-circle"
+          count={stage2.capabilityGaps.length}
           accentColor="#fb923c"
         >
-          <RefinedAssertionsSection
-            items={stage2.refinedAssertions}
-            onAccept={onAcceptRefinement}
-            onReject={onRejectRefinement}
-            s2Ctx={s2Ctx}
-          />
+          <CapabilityGapsSection items={stage2.capabilityGaps} s2Ctx={s2Ctx} />
         </Section>
       )}
 
-      {/* 7 — Contradiction Map */}
-      {stage2.contradictionMap?.length > 0 && (
+      {/* 6 — Contradiction Analysis */}
+      {stage2.contradictionAnalysis?.length > 0 && (
         <Section
-          title="Contradiction map"
+          title="Contradiction analysis"
           icon="ti-arrows-opposite"
-          count={stage2.contradictionMap.length}
+          count={stage2.contradictionAnalysis.length}
           accentColor="#fb923c"
         >
-          <ContradictionSection items={stage2.contradictionMap} s2Ctx={s2Ctx} />
+          <ContradictionAnalysisSection items={stage2.contradictionAnalysis} s2Ctx={s2Ctx} />
         </Section>
       )}
 
-      {/* 8 — Unresolved Questions */}
-      {stage2.unresolvedQuestions?.length > 0 && (
+      {/* 7 — Risk Models */}
+      {stage2.riskModels?.length > 0 && (
         <Section
-          title="Unresolved questions"
-          icon="ti-question-mark"
-          count={stage2.unresolvedQuestions.length}
+          title="Risk models"
+          icon="ti-shield-exclamation"
+          count={stage2.riskModels.length}
+          accentColor="#f87171"
+          defaultOpen={false}
+        >
+          <RiskModelsSection items={stage2.riskModels} s2Ctx={s2Ctx} />
+        </Section>
+      )}
+
+      {/* 8 — Opportunity Models */}
+      {stage2.opportunityModels?.length > 0 && (
+        <Section
+          title="Opportunity models"
+          icon="ti-sparkles"
+          count={stage2.opportunityModels.length}
+          accentColor="var(--a4)"
+          defaultOpen={false}
+        >
+          <OpportunityModelsSection items={stage2.opportunityModels} s2Ctx={s2Ctx} />
+        </Section>
+      )}
+
+      {/* 9 — Next Actions */}
+      {stage2.nextActions?.length > 0 && (
+        <Section
+          title="Next actions"
+          icon="ti-checklist"
+          count={stage2.nextActions.length}
           accentColor="var(--muted)"
           defaultOpen={false}
         >
-          <UnresolvedSection items={stage2.unresolvedQuestions} s2Ctx={s2Ctx} />
+          <NextActionsSection items={stage2.nextActions} s2Ctx={s2Ctx} />
         </Section>
       )}
 
-      {/* 9 — Stage 3 Readiness */}
-      {stage2.stage3ReadinessSummary && (
+      {/* 10 — Readiness Assessment */}
+      {stage2.readinessAssessment && (
         <Section
-          title="Stage 3 readiness"
+          title="Readiness assessment"
           icon="ti-arrow-right-circle"
           accentColor="var(--accent)"
         >
-          <Stage3ReadinessSection data={stage2.stage3ReadinessSummary} s2Ctx={s2Ctx} />
-        </Section>
-      )}
-
-      {/* 10 — Recommended Next Actions */}
-      {stage2.recommendedNextActions?.length > 0 && (
-        <Section
-          title="Recommended next actions"
-          icon="ti-checklist"
-          count={stage2.recommendedNextActions.length}
-          accentColor="var(--muted)"
-          defaultOpen={false}
-        >
-          <NextActionsSection items={stage2.recommendedNextActions} s2Ctx={s2Ctx} />
+          <ReadinessAssessmentSection data={stage2.readinessAssessment} s2Ctx={s2Ctx} />
         </Section>
       )}
 
@@ -599,39 +600,83 @@ function EvidenceBearingItem({
   )
 }
 
-function SummarySection({ summary, s2Ctx }) {
-  if (!summary) return null
-  const fields = [
-    { key: 'whatChanged',       label: 'What changed',       color: 'var(--accent)' },
-    { key: 'strongestEvidence', label: 'Strongest evidence', color: 'var(--accent)' },
-    { key: 'weakestAreas',      label: 'Weakest areas',      color: '#fb923c' },
-    { key: 'dominantTensions',  label: 'Dominant tensions',  color: '#fb923c' },
-    { key: 'likelyDirection',   label: 'Likely direction',   color: 'var(--a4)' },
-  ]
+// ── Confidence badge ───────────────────────────────────────────────────────────
+function ConfidenceBadge({ confidence }) {
+  const cfg = {
+    high:   { color: 'var(--accent)',  label: 'high confidence' },
+    medium: { color: '#fb923c',        label: 'medium confidence' },
+    low:    { color: '#f87171',        label: 'low confidence' },
+  }[confidence] || { color: 'var(--muted)', label: confidence }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {fields.map(f => summary[f.key] ? (
-        <div key={f.key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <div style={{
-            fontSize: 9, fontFamily: 'var(--fm)', color: f.color,
-            padding: '2px 6px', borderRadius: 3,
-            background: `${f.color}14`, border: `1px solid ${f.color}25`,
-            whiteSpace: 'nowrap', flexShrink: 0, marginTop: 1,
-          }}>
-            {f.label}
-          </div>
-          <div style={{ flex: 1 }}>
-            <EvidenceBearingItem
-              itemKey={`sum:${f.key}`}
-              sectionLabel="Stage 2 summary"
-              text={summary[f.key]}
-              citations={[]}
-              sourceNodeIds={[]}
-              s2Ctx={s2Ctx}
-            />
-          </div>
+    <span style={{
+      fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+      color: cfg.color, background: `${cfg.color}14`, border: `1px solid ${cfg.color}30`,
+    }}>
+      {cfg.label}
+    </span>
+  )
+}
+
+// ── Severity badge ─────────────────────────────────────────────────────────────
+function SeverityBadge({ severity }) {
+  const cfg = {
+    high:   { color: '#f87171',  label: 'high severity' },
+    medium: { color: '#fb923c',  label: 'medium severity' },
+    low:    { color: 'var(--muted)', label: 'low severity' },
+  }[severity] || { color: 'var(--muted)', label: severity }
+  return (
+    <span style={{
+      fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+      color: cfg.color, background: `${cfg.color}14`, border: `1px solid ${cfg.color}30`,
+    }}>
+      {cfg.label}
+    </span>
+  )
+}
+
+// ── Time horizon badge ─────────────────────────────────────────────────────────
+function HorizonBadge({ horizon }) {
+  const cfg = {
+    now:   { color: '#f87171',       label: 'now' },
+    next:  { color: '#fb923c',       label: 'next' },
+    later: { color: 'var(--muted)',  label: 'later' },
+  }[horizon] || { color: 'var(--muted)', label: horizon || '—' }
+  return (
+    <span style={{
+      fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+      color: cfg.color, background: `${cfg.color}14`, border: `1px solid ${cfg.color}30`,
+    }}>
+      {cfg.label}
+    </span>
+  )
+}
+
+// ── Small label row ────────────────────────────────────────────────────────────
+function LabelRow({ label, value, color }) {
+  if (!value) return null
+  const c = color || 'var(--muted)'
+  return (
+    <div style={{ marginBottom: 5 }}>
+      <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: c, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 2 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>{value}</div>
+    </div>
+  )
+}
+
+// ── Bullet list ────────────────────────────────────────────────────────────────
+function BulletList({ items, color }) {
+  if (!items?.length) return null
+  const c = color || 'var(--muted)'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 5 }}>
+      {items.map((item, i) => (
+        <div key={i} style={{ display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+          <span style={{ color: c, fontSize: 9, flexShrink: 0, paddingTop: 2 }}>▸</span>
+          <span style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.55 }}>{item}</span>
         </div>
-      ) : null)}
+      ))}
     </div>
   )
 }
@@ -692,78 +737,28 @@ function EvidenceCitationPanel({ citations }) {
   )
 }
 
-function EvidenceSection({ items, s2Ctx }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {items.map((item, i) => {
-        const cites = buildS2ItemCitations(item, s2Ctx.stage1Nodes)
-        return (
-          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
-            <EvidenceBearingItem
-              itemKey={`ec:${item.nodeId}`}
-              sectionLabel="Evidence consolidation"
-              text={item.evidenceSummary}
-              citations={cites}
-              sourceNodeIds={item.nodeId ? [item.nodeId] : []}
-              s2Ctx={s2Ctx}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
-                <NodeRef nodeId={item.nodeId} nodes={s2Ctx.stage1Nodes} />
-                <RelBadge rel={item.relationship} />
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 7, fontStyle: 'italic' }}>
-                "{item.nodeStatement}"
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65, marginBottom: cites.length ? 4 : 8 }}>
-                {renderCitedText(item.evidenceSummary, cites)}
-              </div>
-            </EvidenceBearingItem>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function CompetitorSection({ items, s2Ctx }) {
-  const typeColor = t => t === 'mature' ? '#fb923c' : t === 'differentiated' ? 'var(--a2)' : 'var(--a4)'
+function StrategicThemesSection({ items, s2Ctx }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {items.map((c, i) => {
-        const primaryText = c.implications || c.strategicDivergence || c.segmentFit || ''
+      {items.map((t, i) => {
+        const nodeIds = t.supportingNodeIds || []
         return (
           <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
             <EvidenceBearingItem
-              itemKey={`comp:${i}`}
-              sectionLabel="Competitor maturity map"
-              text={primaryText}
+              itemKey={`theme:${i}`}
+              sectionLabel="Strategic themes"
+              text={t.whyItMatters || t.title}
               citations={[]}
-              sourceNodeIds={[]}
+              sourceNodeIds={nodeIds}
               s2Ctx={s2Ctx}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 600 }}>{c.name}</span>
-                <span style={{
-                  fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-                  color: typeColor(c.type), background: `${typeColor(c.type)}14`,
-                  border: `1px solid ${typeColor(c.type)}30`,
-                }}>
-                  {c.type}
-                </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{t.title}</span>
+                <ConfidenceBadge confidence={t.confidence} />
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
               </div>
-              {[
-                { label: 'Segment fit',         value: c.segmentFit },
-                { label: 'Capability gaps',      value: c.capabilityGaps },
-                { label: 'Strategic divergence', value: c.strategicDivergence },
-                { label: 'Implications',         value: c.implications },
-              ].map(row => row.value ? (
-                <div key={row.label} style={{ marginBottom: 6 }}>
-                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 2 }}>
-                    {row.label}
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>{row.value}</div>
-                </div>
-              ) : null)}
+              <LabelRow label="Why it matters" value={t.whyItMatters} color="var(--accent)" />
+              <LabelRow label="Downstream implications" value={t.downstreamImplications} color="#fb923c" />
             </EvidenceBearingItem>
           </div>
         )
@@ -772,76 +767,130 @@ function CompetitorSection({ items, s2Ctx }) {
   )
 }
 
-function EntrantsSection({ items, s2Ctx }) {
+function DecisionFrameworksSection({ items, s2Ctx }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {items.map((e, i) => {
-        const nodeIds = e.relevantTo && e.relevantTo !== 'open_question' ? [e.relevantTo] : []
-        const cites   = buildS2ItemCitations({ relevantTo: e.relevantTo }, s2Ctx.stage1Nodes)
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {items.map((f, i) => {
+        const nodeIds = f.supportingNodeIds || []
         return (
           <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
             <EvidenceBearingItem
-              itemKey={`ent:${i}`}
-              sectionLabel="Emerging entrants"
-              text={e.strategicImplication || e.capability || ''}
-              citations={cites}
+              itemKey={`df:${i}`}
+              sectionLabel="Decision frameworks"
+              text={f.tradeoffs || f.question}
+              citations={[]}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{f.title}</span>
+                <ConfidenceBadge confidence={f.confidence} />
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
+              </div>
+              {f.question && (
+                <div style={{ fontSize: 10, color: 'var(--muted)', fontStyle: 'italic', marginBottom: 7 }}>{f.question}</div>
+              )}
+              {f.options?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Options</div>
+                  {f.options.map((opt, j) => (
+                    <div key={j} style={{ display: 'flex', gap: 5, alignItems: 'flex-start', marginBottom: 2 }}>
+                      <span style={{ color: 'var(--a4)', fontSize: 9, flexShrink: 0, paddingTop: 2 }}>▸</span>
+                      <span style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.55 }}>{opt}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <LabelRow label="Tradeoffs" value={f.tradeoffs} color="#fb923c" />
+              <LabelRow label="Recommended path" value={f.recommendedPath} color="var(--accent)" />
+            </EvidenceBearingItem>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ScenarioModelsSection({ items, s2Ctx }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {items.map((s, i) => {
+        const nodeIds = s.supportingNodeIds || []
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+            <EvidenceBearingItem
+              itemKey={`scen:${i}`}
+              sectionLabel="Scenario models"
+              text={s.recommendedResponse || s.title}
+              citations={[]}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{s.title}</span>
+                <ConfidenceBadge confidence={s.confidence} />
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
+              </div>
+              {s.drivers?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Drivers</div>
+                  <BulletList items={s.drivers} color="var(--accent)" />
+                </div>
+              )}
+              {s.risks?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: '#fb923c', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Risks</div>
+                  <BulletList items={s.risks} color="#fb923c" />
+                </div>
+              )}
+              {s.leadingIndicators?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a4)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Leading indicators</div>
+                  <BulletList items={s.leadingIndicators} color="var(--a4)" />
+                </div>
+              )}
+              <LabelRow label="Recommended response" value={s.recommendedResponse} color="var(--muted2)" />
+            </EvidenceBearingItem>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function OrgImplicationsSection({ items, s2Ctx }) {
+  const funcColor = f => {
+    if (f === 'engineering' || f === 'security') return '#f87171'
+    if (f === 'product' || f === 'executive')    return 'var(--accent)'
+    if (f === 'legal' || f === 'operations')     return '#fb923c'
+    return 'var(--a4)'
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {items.map((item, i) => {
+        const nodeIds = item.supportingNodeIds || []
+        const fc = funcColor(item.function)
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+            <EvidenceBearingItem
+              itemKey={`org:${i}`}
+              sectionLabel="Organizational implications"
+              text={item.implication}
+              citations={[]}
               sourceNodeIds={nodeIds}
               s2Ctx={s2Ctx}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11, fontWeight: 600 }}>{e.name}</span>
-                {nodeIds.length > 0 && <NodeRef nodeId={e.relevantTo} nodes={s2Ctx.stage1Nodes} />}
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6, marginBottom: 5 }}>
-                <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginRight: 4 }}>Capability:</span>
-                {e.capability}
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>
-                <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: '#fb923c', marginRight: 4 }}>Implication:</span>
-                {e.strategicImplication}
-              </div>
-            </EvidenceBearingItem>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function AdjacencySection({ items, s2Ctx }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {items.map((a, i) => {
-        const nodeIds = a.connectedNodeIds || []
-        const cites   = buildS2ItemCitations({ connectedNodeIds: nodeIds }, s2Ctx.stage1Nodes)
-        const primaryText = a.partnershipLogic || a.acquisitionLogic || a.buildVsBuy || ''
-        return (
-          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
-            <EvidenceBearingItem
-              itemKey={`adj:${i}`}
-              sectionLabel="Adjacency & acquisition opportunities"
-              text={primaryText}
-              citations={cites}
-              sourceNodeIds={nodeIds}
-              s2Ctx={s2Ctx}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11, fontWeight: 600 }}>{a.area}</span>
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--fm)', padding: '2px 8px', borderRadius: 3,
+                  color: fc, background: `${fc}14`, border: `1px solid ${fc}30`, textTransform: 'uppercase', letterSpacing: '.06em',
+                }}>
+                  {item.function?.replace(/_/g, ' ')}
+                </span>
+                <SeverityBadge severity={item.severity} />
                 {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
               </div>
-              {[
-                { label: 'Partnership logic', value: a.partnershipLogic },
-                { label: 'Acquisition logic', value: a.acquisitionLogic },
-                { label: 'Build vs buy',      value: a.buildVsBuy },
-                { label: 'Risks',             value: a.risks },
-              ].map(row => row.value ? (
-                <div key={row.label} style={{ marginBottom: 6 }}>
-                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 2 }}>
-                    {row.label}
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--muted2)', lineHeight: 1.6 }}>{row.value}</div>
-                </div>
-              ) : null)}
+              <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.65 }}>{item.implication}</div>
             </EvidenceBearingItem>
           </div>
         )
@@ -850,250 +899,276 @@ function AdjacencySection({ items, s2Ctx }) {
   )
 }
 
-function RefinedAssertionsSection({ items, onAccept, onReject, s2Ctx }) {
+function CapabilityGapsSection({ items, s2Ctx }) {
+  const valueColor = v => v === 'high' ? '#f87171' : v === 'medium' ? '#fb923c' : 'var(--muted)'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted)', marginBottom: 2 }}>
-        <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> Accepted refinements are approved for downstream synthesis. Stage 1 remains preserved as the original research basis.
-      </div>
-      {items.map((r, i) => {
-        const status = r.userStatus || 'pending'
-        const cites  = buildS2ItemCitations({ nodeId: r.nodeId }, s2Ctx.stage1Nodes)
-        return (
-          <div key={i} style={{
-            padding: 10, borderRadius: 6,
-            background: status === 'accepted' ? 'rgba(0,229,180,.05)' :
-                        status === 'rejected'  ? 'rgba(248,113,113,.04)' : 'var(--s2)',
-            border: `1px solid ${status === 'accepted' ? 'rgba(0,229,180,.25)' :
-                                  status === 'rejected'  ? 'rgba(248,113,113,.2)' : 'var(--border)'}`,
-          }}>
-            <EvidenceBearingItem
-              itemKey={`ref:${r.nodeId}`}
-              sectionLabel="Refined assertions"
-              text={r.revisedStatement}
-              citations={cites}
-              sourceNodeIds={r.nodeId ? [r.nodeId] : []}
-              s2Ctx={s2Ctx}
-            >
-              {/* Header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7, flexWrap: 'wrap' }}>
-                <NodeRef nodeId={r.nodeId} nodes={s2Ctx.stage1Nodes} />
-                <RefinementBadge type={r.refinementType} />
-                {r.confidenceChange !== 'unchanged' && (
-                  <span style={{
-                    fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-                    color: r.confidenceChange === 'increased' ? 'var(--accent)' : '#f87171',
-                    background: r.confidenceChange === 'increased' ? 'rgba(0,229,180,.1)' : 'rgba(248,113,113,.08)',
-                  }}>
-                    confidence {r.confidenceChange}
-                  </span>
-                )}
-              </div>
-
-              {/* Original statement */}
-              {r.originalStatement && (
-                <div style={{
-                  fontSize: 10, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 6,
-                  padding: '5px 8px', background: 'rgba(249,115,22,.04)',
-                  border: '1px solid rgba(249,115,22,.15)', borderRadius: 5,
-                }}>
-                  <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--a3)', display: 'block', marginBottom: 2 }}>original:</span>
-                  {r.originalStatement}
-                </div>
-              )}
-
-              {/* Revised statement */}
-              <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 6 }}>
-                {r.revisedStatement}
-              </div>
-
-              {/* Reason */}
-              {r.reason && (
-                <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', fontStyle: 'italic', marginBottom: 8 }}>
-                  <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> {r.reason}
-                </div>
-              )}
-
-              {/* Accept proposal / Reject (existing proposal controls) */}
-              {status === 'pending' && (
-                <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
-                  <button
-                    onClick={() => onAccept(r.nodeId)}
-                    style={{
-                      fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px',
-                      border: '1px solid rgba(0,229,180,.3)', borderRadius: 5, cursor: 'pointer',
-                      background: 'rgba(0,229,180,.08)', color: 'var(--accent)',
-                      display: 'flex', alignItems: 'center', gap: 3,
-                    }}
-                  >
-                    <i className="ti ti-check" style={{ fontSize: 9 }} /> Accept proposal
-                  </button>
-                  <button
-                    onClick={() => onReject(r.nodeId)}
-                    style={{
-                      fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 10px',
-                      border: '1px solid rgba(248,113,113,.25)', borderRadius: 5, cursor: 'pointer',
-                      background: 'transparent', color: '#f87171',
-                      display: 'flex', alignItems: 'center', gap: 3,
-                    }}
-                  >
-                    <i className="ti ti-x" style={{ fontSize: 9 }} /> Reject
-                  </button>
-                </div>
-              )}
-              {status !== 'pending' && (
-                <div style={{
-                  fontSize: 9, fontFamily: 'var(--fm)',
-                  color: status === 'accepted' ? 'var(--accent)' : '#f87171',
-                  display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4,
-                }}>
-                  <i className={`ti ti-${status === 'accepted' ? 'check' : 'x'}`} style={{ fontSize: 9 }} />
-                  {status}
-                  {r.latestReview?.createdAt && (
-                    <span style={{ color: 'var(--muted)', fontSize: 9 }}>
-                      · {new Date(r.latestReview.createdAt).toLocaleTimeString()}
-                    </span>
-                  )}
-                </div>
-              )}
-            </EvidenceBearingItem>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function ContradictionSection({ items, s2Ctx }) {
-  const resColor = r => r === 'resolved' ? 'var(--accent)' : r === 'partial' ? 'var(--a3)' : '#fb923c'
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: '#fb923c', marginBottom: 2 }}>
-        <i className="ti ti-alert-triangle" style={{ fontSize: 10, verticalAlign: -1 }} /> Tensions preserved intentionally — do not force resolution prematurely.
-      </div>
-      {items.map((c, i) => {
-        const nodeIds = c.nodeIds || []
-        const cites   = buildS2ItemCitations({ nodeIds }, s2Ctx.stage1Nodes)
-        return (
-          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'rgba(251,146,60,.04)', border: '1px solid rgba(251,146,60,.2)' }}>
-            <EvidenceBearingItem
-              itemKey={`contra:${i}`}
-              sectionLabel="Contradiction map"
-              text={c.description}
-              citations={cites}
-              sourceNodeIds={nodeIds}
-              s2Ctx={s2Ctx}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
-                <span style={{
-                  fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-                  color: 'var(--muted)', background: 'var(--s2)', border: '1px solid var(--border)',
-                }}>
-                  {c.tensionType?.replace(/_/g, ' ')}
-                </span>
-                <span style={{
-                  fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
-                  color: resColor(c.resolution), background: `${resColor(c.resolution)}14`,
-                }}>
-                  {c.resolution}
-                </span>
-                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 5 }}>
-                {c.description}
-              </div>
-              {c.resolutionNote && (
-                <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: 'var(--muted2)', fontStyle: 'italic' }}>
-                  {c.resolutionNote}
-                </div>
-              )}
-            </EvidenceBearingItem>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function UnresolvedSection({ items, s2Ctx }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      {items.map((q, i) => (
-        <div key={i} style={{ padding: '6px 10px', borderLeft: '2px solid var(--border2)' }}>
+      {items.map((g, i) => (
+        <div key={i} style={{ padding: 10, borderRadius: 6, background: 'rgba(251,146,60,.04)', border: '1px solid rgba(251,146,60,.2)' }}>
           <EvidenceBearingItem
-            itemKey={`uq:${i}`}
-            sectionLabel="Unresolved questions"
-            text={q}
+            itemKey={`gap:${i}`}
+            sectionLabel="Capability gaps"
+            text={g.whyItMatters || g.gap}
             citations={[]}
             sourceNodeIds={[]}
             s2Ctx={s2Ctx}
-          />
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, fontWeight: 600 }}>{g.gap}</span>
+              <span style={{
+                fontSize: 9, fontFamily: 'var(--fm)', padding: '1px 6px', borderRadius: 3,
+                color: valueColor(g.valueOfResolving), background: `${valueColor(g.valueOfResolving)}14`,
+              }}>
+                {g.valueOfResolving} value to resolve
+              </span>
+            </div>
+            <LabelRow label="Why it matters" value={g.whyItMatters} color="#fb923c" />
+            {g.blockedDecisions?.length > 0 && (
+              <div style={{ marginBottom: 4 }}>
+                <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: '#f87171', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Blocked decisions</div>
+                <BulletList items={g.blockedDecisions} color="#f87171" />
+              </div>
+            )}
+          </EvidenceBearingItem>
         </div>
       ))}
     </div>
   )
 }
 
-function Stage3ReadinessSection({ data, s2Ctx }) {
-  const groups = [
-    { key: 'highConfidenceFindings', label: 'High-confidence findings', color: 'var(--accent)' },
-    { key: 'strongestThemes',        label: 'Strongest themes',         color: 'var(--accent)' },
-    { key: 'capabilityGaps',         label: 'Capability gaps',          color: '#fb923c' },
-    { key: 'refinedTensions',        label: 'Refined tensions',         color: '#fb923c' },
-    { key: 'unresolvedBlockers',     label: 'Unresolved blockers',      color: '#f87171' },
-    { key: 'strategicImplications',  label: 'Strategic implications',   color: 'var(--a4)' },
-  ]
+function ContradictionAnalysisSection({ items, s2Ctx }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ fontSize: 10, fontFamily: 'var(--fm)', color: '#fb923c', marginBottom: 2 }}>
+        <i className="ti ti-alert-triangle" style={{ fontSize: 10, verticalAlign: -1 }} /> Contradictions are expanded into possible explanations — do not force resolution prematurely.
+      </div>
+      {items.map((c, i) => {
+        const nodeIds = c.supportingNodeIds || []
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'rgba(251,146,60,.04)', border: '1px solid rgba(251,146,60,.2)' }}>
+            <EvidenceBearingItem
+              itemKey={`contra:${i}`}
+              sectionLabel="Contradiction analysis"
+              text={c.businessImpact || c.description}
+              citations={[]}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                <ConfidenceBadge confidence={c.likelihood} />
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 6 }}>{c.description}</div>
+              {c.explanations?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Possible explanations</div>
+                  <BulletList items={c.explanations} color="var(--muted)" />
+                </div>
+              )}
+              <LabelRow label="Business impact" value={c.businessImpact} color="#fb923c" />
+              <LabelRow label="Follow-up" value={c.followUp} color="var(--a4)" />
+            </EvidenceBearingItem>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RiskModelsSection({ items, s2Ctx }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {groups.map(g => (data[g.key]?.length > 0) ? (
-        <div key={g.key}>
-          <div style={{
-            fontSize: 9, fontFamily: 'var(--fm)', color: g.color,
-            textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 5,
-          }}>
-            {g.label}
+      {items.map((r, i) => {
+        const nodeIds = r.supportingNodeIds || []
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'rgba(248,113,113,.04)', border: '1px solid rgba(248,113,113,.2)' }}>
+            <EvidenceBearingItem
+              itemKey={`risk:${i}`}
+              sectionLabel="Risk models"
+              text={r.businessImpact || r.propagation}
+              citations={[]}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{r.name}</span>
+                {r.owner && (
+                  <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', padding: '1px 6px', borderRadius: 3, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+                    owner: {r.owner}
+                  </span>
+                )}
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
+              </div>
+              <LabelRow label="Trigger" value={r.trigger} color="#f87171" />
+              <LabelRow label="Propagation" value={r.propagation} color="#fb923c" />
+              {r.affectedSystems?.length > 0 && (
+                <div style={{ marginBottom: 5 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Affected systems</div>
+                  <BulletList items={r.affectedSystems} color="var(--muted)" />
+                </div>
+              )}
+              <LabelRow label="Customer impact" value={r.customerImpact} color="var(--muted2)" />
+              <LabelRow label="Business impact" value={r.businessImpact} color="var(--muted2)" />
+              <LabelRow label="Mitigation" value={r.mitigation} color="var(--accent)" />
+            </EvidenceBearingItem>
           </div>
-          {data[g.key].map((item, i) => (
-            <div key={i} style={{ marginBottom: 4, paddingLeft: 10, borderLeft: `2px solid ${g.color}40` }}>
-              <EvidenceBearingItem
-                itemKey={`s3r:${g.key}:${i}`}
-                sectionLabel="Stage 3 readiness"
-                text={item}
-                citations={[]}
-                sourceNodeIds={[]}
-                s2Ctx={s2Ctx}
-              />
-            </div>
-          ))}
-        </div>
-      ) : null)}
+        )
+      })}
+    </div>
+  )
+}
+
+function OpportunityModelsSection({ items, s2Ctx }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {items.map((o, i) => {
+        const nodeIds = o.supportingNodeIds || []
+        return (
+          <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+            <EvidenceBearingItem
+              itemKey={`opp:${i}`}
+              sectionLabel="Opportunity models"
+              text={o.rationale || o.title}
+              citations={[]}
+              sourceNodeIds={nodeIds}
+              s2Ctx={s2Ctx}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{o.title}</span>
+                <HorizonBadge horizon={o.timeHorizon} />
+                <ConfidenceBadge confidence={o.confidence} />
+                {nodeIds.map(id => <NodeRef key={id} nodeId={id} nodes={s2Ctx.stage1Nodes} />)}
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginBottom: 7, flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Value',      value: o.businessValue },
+                  { label: 'Complexity', value: o.complexity },
+                ].map(row => row.value ? (
+                  <div key={row.label}>
+                    <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginBottom: 1 }}>{row.label}</div>
+                    <SeverityBadge severity={row.value} />
+                  </div>
+                ) : null)}
+              </div>
+              {o.dependencies?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Dependencies</div>
+                  <BulletList items={o.dependencies} color="var(--muted)" />
+                </div>
+              )}
+              <LabelRow label="Rationale" value={o.rationale} color="var(--muted2)" />
+            </EvidenceBearingItem>
+          </div>
+        )
+      })}
     </div>
   )
 }
 
 function NextActionsSection({ items, s2Ctx }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {items.map((a, i) => (
-        <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <span style={{
-            fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)',
-            flexShrink: 0, paddingTop: 2,
-          }}>
-            {i + 1}.
-          </span>
-          <div style={{ flex: 1 }}>
+        <div key={i} style={{ padding: 10, borderRadius: 6, background: 'var(--s2)', border: '1px solid var(--border)' }}>
+          <EvidenceBearingItem
+            itemKey={`act:${i}`}
+            sectionLabel="Next actions"
+            text={a.action}
+            citations={[]}
+            sourceNodeIds={[]}
+            s2Ctx={s2Ctx}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <span style={{
+                fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)',
+                flexShrink: 0, paddingTop: 3, minWidth: 14, textAlign: 'right',
+              }}>
+                {i + 1}.
+              </span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65, marginBottom: 6 }}>{a.action}</div>
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                  {[
+                    { label: 'Info gain',   value: a.expectedInfoGain },
+                    { label: 'Cost',        value: a.cost },
+                  ].map(row => row.value ? (
+                    <div key={row.label} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      <span style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)' }}>{row.label}:</span>
+                      <SeverityBadge severity={row.value} />
+                    </div>
+                  ) : null)}
+                </div>
+                {a.confidenceImprovement && (
+                  <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 5 }}>
+                    <i className="ti ti-trending-up" style={{ fontSize: 9, verticalAlign: -1, marginRight: 3 }} />
+                    Resolves: {a.confidenceImprovement}
+                  </div>
+                )}
+                {a.decisionImpact && (
+                  <div style={{ fontSize: 9, color: 'var(--a4)', marginTop: 3 }}>
+                    <i className="ti ti-arrow-right" style={{ fontSize: 9, verticalAlign: -1, marginRight: 3 }} />
+                    Unblocks: {a.decisionImpact}
+                  </div>
+                )}
+              </div>
+            </div>
+          </EvidenceBearingItem>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ReadinessAssessmentSection({ data, s2Ctx }) {
+  if (!data) return null
+  const maturityColor = m => m === 'high' ? 'var(--accent)' : m === 'medium' ? '#fb923c' : '#f87171'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
+        {data.knowledgeMaturity && (
+          <div>
+            <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginBottom: 3 }}>Knowledge maturity</div>
+            <span style={{
+              fontSize: 9, fontFamily: 'var(--fm)', padding: '2px 8px', borderRadius: 3,
+              color: maturityColor(data.knowledgeMaturity), background: `${maturityColor(data.knowledgeMaturity)}14`,
+              border: `1px solid ${maturityColor(data.knowledgeMaturity)}30`,
+            }}>
+              {data.knowledgeMaturity}
+            </span>
+          </div>
+        )}
+        {data.confidence && (
+          <div>
+            <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--muted)', marginBottom: 3 }}>Overall confidence</div>
+            <ConfidenceBadge confidence={data.confidence} />
+          </div>
+        )}
+      </div>
+      <LabelRow label="Remaining uncertainty" value={data.remainingUncertainty} color="#fb923c" />
+      {data.majorBlockers?.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: '#f87171', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 4 }}>Major blockers</div>
+          <BulletList items={data.majorBlockers} color="#f87171" />
+        </div>
+      )}
+      {data.recommendation && (
+        <div style={{
+          marginTop: 4, padding: '8px 12px', borderRadius: 6,
+          background: 'rgba(0,229,180,.05)', border: '1px solid rgba(0,229,180,.2)',
+        }}>
+          <div style={{ fontSize: 9, fontFamily: 'var(--fm)', color: 'var(--accent)', marginBottom: 3 }}>Recommendation</div>
+          <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.65 }}>
             <EvidenceBearingItem
-              itemKey={`act:${i}`}
-              sectionLabel="Recommended next actions"
-              text={a}
+              itemKey="readiness:recommendation"
+              sectionLabel="Readiness assessment"
+              text={data.recommendation}
               citations={[]}
               sourceNodeIds={[]}
               s2Ctx={s2Ctx}
             />
           </div>
         </div>
-      ))}
+      )}
     </div>
   )
 }
