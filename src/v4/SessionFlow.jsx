@@ -93,6 +93,19 @@ function isValidStage1Data(data) {
   )
 }
 
+function isValidRefinementData(data, nodeIds) {
+  if (!data || typeof data !== 'object') return false
+  const overrides = data.nodeOverrides
+  if (!overrides || typeof overrides !== 'object') return false
+  const nodeIdSet = new Set(nodeIds)
+  const VALID = new Set(['primary', 'secondary', 'suppressed'])
+  const entries = Object.entries(overrides)
+  if (entries.length === 0) return false
+  return entries.some(([id, ov]) =>
+    nodeIdSet.has(id) && ov && typeof ov.rank === 'number' && VALID.has(ov.emphasis)
+  )
+}
+
 // step: 'intent' | 'generating' | 'inspect' | 'regenerating'
 //     | 'stage2_generating' | 'stage2' | 'stage2_candidate_review'
 //     | 'stage3_generating' | 'stage3' | 'stage4'
@@ -110,6 +123,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   const [diff, setDiff]           = useState(null)
   const [error, setError]         = useState(null)
   const [isRefiningStage1,          setIsRefiningStage1]          = useState(false)
+  const [refinementFailed,          setRefinementFailed]          = useState(false)
+  const [failedRefinementPrompt,    setFailedRefinementPrompt]    = useState('')
   const [isEnrichingEvidence,       setIsEnrichingEvidence]       = useState(false)
   const [isUpdatingStrategyOptions, setIsUpdatingStrategyOptions] = useState(false)
   const [isGeneratingStrategyMenu, setIsGeneratingStrategyMenu]   = useState(false)
@@ -520,7 +535,10 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     }
 
     setIsRefiningStage1(true)
+    setRefinementFailed(false)
     setError(null)
+
+    const existingNodeIds = (session.stage1.nodes || []).map(n => n.id)
 
     try {
       // ── Path 2 — direction + evidence ──────────────────────────────
@@ -539,9 +557,15 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             directionalPrompt,
             requestFlags,
           })
-          const result = await callClaudeWithSearch(prompt, 4500, 3)
+          const result = await callClaudeWithSearch(prompt, 8000, 3)
           rawSearchBlocks = result.rawSearchBlocks || []
+          if (result.stopReason === 'max_tokens') {
+            throw new Error('Direction refinement did not complete — the response was cut off. Please retry.')
+          }
           refinementData = parseJsonResponse(result.text)
+          if (!isValidRefinementData(refinementData, existingNodeIds)) {
+            throw new Error('Direction response did not return valid node overrides. Please retry.')
+          }
         }
 
         const { citations: newCitations, modelIdToHostId } = buildStage1Citations(
@@ -640,8 +664,11 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           intent:           session.intent,
           directionalPrompt,
         })
-        const raw = await callClaude(prompt, 3000)
+        const raw = await callClaude(prompt, 6000)
         refinementData = parseJsonResponse(raw)
+        if (!isValidRefinementData(refinementData, existingNodeIds)) {
+          throw new Error('Direction response did not return valid node overrides. Please retry.')
+        }
       }
 
       const nodes = session.stage1.nodes
@@ -675,6 +702,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       }))
     } catch (e) {
       setError(`Stage 1 refinement failed: ${e.message}`)
+      setRefinementFailed(true)
+      setFailedRefinementPrompt(directionalPrompt)
     } finally {
       setIsRefiningStage1(false)
     }
@@ -2141,6 +2170,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             onViewStage2={() => setStep('stage2')}
             onRefine={handleStage1Refine}
             onClearRefinement={handleClearStage1Refinement}
+            refinementFailed={refinementFailed}
+            failedRefinementPrompt={failedRefinementPrompt}
             onEnrich={handleEnrichEvidence}
             isEnriching={isEnrichingEvidence}
             enrichmentAvailable={enrichmentInfo.available}

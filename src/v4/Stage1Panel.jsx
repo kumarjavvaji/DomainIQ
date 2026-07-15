@@ -22,6 +22,8 @@ export default function Stage1Panel({
   isEnriching,
   enrichmentAvailable,
   enrichmentCount,
+  refinementFailed,
+  failedRefinementPrompt,
 }) {
   const { stage1, generationPolicy, entity, intent } = session
   const nodes = stage1?.nodes || []
@@ -152,6 +154,8 @@ export default function Stage1Panel({
         onToggleHideSuppressed={() => setHideSuppressed(v => !v)}
         onRefine={onRefine}
         onClear={onClearRefinement}
+        refinementFailed={refinementFailed}
+        failedRefinementPrompt={failedRefinementPrompt}
       />
 
       {/* DiffView fallback: rendered above the list only when challengedNodeId
@@ -308,7 +312,7 @@ export default function Stage1Panel({
 
 // ── DirectionalRefinementBar ──────────────────────────────────────────────────
 
-function DirectionalRefinementBar({ refinementLayer, isRefining, hideSuppressed, onToggleHideSuppressed, onRefine, onClear }) {
+function DirectionalRefinementBar({ refinementLayer, isRefining, hideSuppressed, onToggleHideSuppressed, onRefine, onClear, refinementFailed, failedRefinementPrompt }) {
   const [editing, setEditing] = useState(false)
   const [prompt, setPrompt]   = useState('')
 
@@ -320,7 +324,7 @@ function DirectionalRefinementBar({ refinementLayer, isRefining, hideSuppressed,
   }
 
   function handleEdit() {
-    setPrompt(refinementLayer?.prompt || '')
+    setPrompt(refinementLayer?.prompt || failedRefinementPrompt || '')
     setEditing(true)
   }
 
@@ -396,6 +400,44 @@ function DirectionalRefinementBar({ refinementLayer, isRefining, hideSuppressed,
               <i className="ti ti-x" style={{ fontSize: 9 }} /> Clear
             </button>
           </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Direction failed state — show between active-chip and entry form
+  if (!refinementLayer && refinementFailed && !editing) {
+    return (
+      <div style={{
+        background: 'rgba(248,113,113,.06)', border: '1px solid rgba(248,113,113,.3)',
+        borderRadius: 'var(--r)', padding: '10px 14px', marginBottom: 14,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 13, color: '#f87171', marginTop: 1, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 9, fontFamily: 'var(--fm)', fontWeight: 600, color: '#f87171', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 4 }}>
+              Direction failed to apply
+            </div>
+            {failedRefinementPrompt && (
+              <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 4 }}>
+                "{failedRefinementPrompt}"
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: 'var(--muted2)' }}>
+              The response was cut off or invalid. Click Retry to resubmit.
+            </div>
+          </div>
+          <button
+            onClick={handleEdit}
+            style={{
+              fontSize: 9, fontFamily: 'var(--fm)', padding: '3px 9px',
+              border: '1px solid rgba(248,113,113,.4)', borderRadius: 4, cursor: 'pointer',
+              background: 'rgba(248,113,113,.08)', color: '#f87171',
+              display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0,
+            }}
+          >
+            <i className="ti ti-refresh" style={{ fontSize: 9 }} /> Retry
+          </button>
         </div>
       </div>
     )
