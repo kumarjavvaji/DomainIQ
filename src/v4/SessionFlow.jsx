@@ -23,7 +23,10 @@ import {
 } from './learningSignals'
 import {
   buildStage1Prompt,
+  buildStage1EnrichmentPrompt,
   buildStage1RefinementPrompt,
+  buildStage1DirectionWithEvidencePrompt,
+  classifyRerunInstruction,
   buildPressureTestPrompt,
   buildStage2Prompt,
   buildStage2ReconcilePrompt,
@@ -41,6 +44,7 @@ import {
   MOCK_V4_STAGE3,
   MOCK_STRATEGY_MENU,
   MOCK_STAGE1_REFINEMENT,
+  MOCK_STAGE1_DIRECTION_WITH_EVIDENCE,
   MOCK_STAGE4_ARTIFACT,
   buildStage4ArtifactRefinementPrompt,
   MOCK_STAGE4_ARTIFACT_REFINED,
@@ -70,8 +74,24 @@ import {
   buildStage2ReviewEvent,
   DEFAULT_ASSESSMENT_CHUNKS,
   mergeAssessmentChunks,
+  buildStage1Citations,
+  validateStage1NodeCitations,
+  computeEnrichmentAvailable,
+  extractSourcesFromSearchBlocks,
 } from '../v4utils'
 import { callClaude, callClaudeWithSearch, callClaudeNoSearch, extractJsonObject } from '../api'
+
+// Minimum validation for a Stage 1 artifact — guards against committing empty results.
+function isValidStage1Data(data) {
+  return (
+    data != null &&
+    typeof data === 'object' &&
+    typeof data.summary === 'string' &&
+    data.summary.trim().length > 0 &&
+    Array.isArray(data.nodes) &&
+    data.nodes.length > 0
+  )
+}
 
 // step: 'intent' | 'generating' | 'inspect' | 'regenerating'
 //     | 'stage2_generating' | 'stage2' | 'stage2_candidate_review'
@@ -90,6 +110,7 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   const [diff, setDiff]           = useState(null)
   const [error, setError]         = useState(null)
   const [isRefiningStage1,          setIsRefiningStage1]          = useState(false)
+  const [isEnrichingEvidence,       setIsEnrichingEvidence]       = useState(false)
   const [isUpdatingStrategyOptions, setIsUpdatingStrategyOptions] = useState(false)
   const [isGeneratingStrategyMenu, setIsGeneratingStrategyMenu]   = useState(false)
   const [isGeneratingSignals,      setIsGeneratingSignals]        = useState(false)
@@ -133,6 +154,8 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   }, [session.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Intent submitted → run Stage 1 ──────────────────────────
+  // Atomic: does not commit stage1 until the artifact passes minimum validation.
+  // On max_tokens or parse failure: shows stage1_failed — never commits empty nodes.
   async function handleIntentSubmit(entity, intent) {
     const baseSession = {
       ...session,
@@ -146,9 +169,9 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
 
     try {
       let stage1Data
+      let rawSearchBlocks = []
 
       if (!apiKeySet) {
-        // Demo mode — short artificial delay then load mock
         await delay(1200)
         stage1Data = MOCK_V4_STAGE1
       } else {
@@ -157,33 +180,65 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           intent,
           policy: baseSession.generationPolicy,
         })
-        const raw = await callClaude(prompt, 3500)
-        stage1Data = parseJsonResponse(raw)
+        // 10000 output tokens — enough to complete 10 nodes with evidence and citations.
+        // Do not change this limit for other workflow calls.
+        const result = await callClaudeWithSearch(prompt, 10000, 3)
+        rawSearchBlocks = result.rawSearchBlocks || []
+
+        if (result.stopReason === 'max_tokens') {
+          // Response truncated — do NOT parse, do NOT commit.
+          throw new Error('Stage 1 generation did not complete — the response was cut off before finishing. Please retry.')
+        }
+
+        let parsed
+        try {
+          parsed = parseJsonResponse(result.text)
+        } catch {
+          throw new Error('Stage 1 response could not be parsed as JSON. Please retry.')
+        }
+
+        if (!isValidStage1Data(parsed)) {
+          throw new Error('Stage 1 generation returned an incomplete artifact (missing summary or nodes). Please retry.')
+        }
+
+        stage1Data = parsed
       }
 
-      // Normalise nodes — ensure all required fields are present
-      const nodes = (stage1Data.nodes || []).map(n => ({
+      // Build canonical citation registry from host-extracted sources + model evidence.
+      const { citations: stage1Citations, modelIdToHostId } = buildStage1Citations(
+        rawSearchBlocks,
+        stage1Data.retrievedEvidence || []
+      )
+      const citationById = new Map(stage1Citations.map(c => [c.id, c]))
+
+      // Normalise nodes — ensure all required fields present, then validate citation refs.
+      const rawNodes = (stage1Data.nodes || []).map(n => ({
         userStatus: 'pending', userNote: null, userPreset: null,
         previousStatement: null, changeReason: null, lastUpdated: null,
+        citationRefs: [], claims: [], validationWarnings: [],
+        researchSuggestions: [], citationGap: null,
         ...n,
       }))
+      const nodes = validateStage1NodeCitations(rawNodes, citationById, modelIdToHostId)
 
       const stage1 = {
         id:               'stage1_' + Date.now(),
         stageNumber:      1,
         generatedAt:      Date.now(),
         summary:          stage1Data.summary || '',
+        citations:        stage1Citations,
         nodes,
         openQuestions:    stage1Data.openQuestions || [],
         inferredPatterns: stage1Data.inferredPatterns || [],
         refinementHistory: [],
       }
 
+      // Atomic commit — only reached after parse and validation succeed.
       setSession(prev => ({ ...prev, stage1 }))
       setStep('inspect')
     } catch (e) {
-      setError('Stage 1 generation failed. Check your API key and try again.')
-      setStep('intent')
+      setError(e.message || 'Stage 1 generation failed. Check your API key and try again.')
+      setStep('stage1_failed')
     }
   }
 
@@ -442,12 +497,137 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
   }
 
   // ── Stage 1 directional refinement ──────────────────────────────────────────
+  // Routes to one of three paths based on the analyst's instruction:
+  //   1. Full canonical regeneration (requiresCanonicalRevision) — re-runs handleIntentSubmit
+  //   2. Direction + evidence (requiresEvidence || requiresDeeperAnalysis) — search-enabled call,
+  //      builds/merges citations, optionally revises canonical node content
+  //   3. Ranking-only (neither of the above) — existing refinementLayer-only path
   async function handleStage1Refine(directionalPrompt) {
     if (!session.stage1 || !directionalPrompt.trim()) return
+
+    const requestFlags = classifyRerunInstruction(directionalPrompt)
+
+    // Path 1 — full canonical regeneration
+    if (requestFlags.requiresCanonicalRevision) {
+      const augmentedIntent = {
+        ...session.intent,
+        why: session.intent.why
+          ? `${session.intent.why}\n\nRerun instruction: ${directionalPrompt}`
+          : directionalPrompt,
+      }
+      await handleIntentSubmit(session.entity, augmentedIntent)
+      return
+    }
+
     setIsRefiningStage1(true)
     setError(null)
 
     try {
+      // ── Path 2 — direction + evidence ──────────────────────────────
+      if (requestFlags.requiresEvidence || requestFlags.requiresDeeperAnalysis) {
+        let refinementData
+        let rawSearchBlocks = []
+
+        if (!apiKeySet) {
+          await delay(1400)
+          refinementData = MOCK_STAGE1_DIRECTION_WITH_EVIDENCE
+        } else {
+          const prompt = buildStage1DirectionWithEvidencePrompt({
+            nodes:            session.stage1.nodes,
+            entity:           session.entity,
+            intent:           session.intent,
+            directionalPrompt,
+            requestFlags,
+          })
+          const result = await callClaudeWithSearch(prompt, 4500, 3)
+          rawSearchBlocks = result.rawSearchBlocks || []
+          refinementData = parseJsonResponse(result.text)
+        }
+
+        const { citations: newCitations, modelIdToHostId } = buildStage1Citations(
+          rawSearchBlocks,
+          refinementData.retrievedEvidence || []
+        )
+
+        setSession(prev => {
+          // Merge new citations into registry
+          const existingCitations = prev.stage1.citations || []
+          const seen = new Set(existingCitations.map(c => (c.url || c.id).toLowerCase().replace(/\/$/, '')))
+          const mergedCitations = [...existingCitations]
+          for (const c of newCitations) {
+            const key = (c.url || c.id).toLowerCase().replace(/\/$/, '')
+            if (!seen.has(key)) { seen.add(key); mergedCitations.push(c) }
+          }
+          const mergedById = new Map(mergedCitations.map(c => [c.id, c]))
+
+          const nodeEvidenceMap = refinementData.nodeEvidenceMap || {}
+          const nodeRevisions   = refinementData.nodeRevisions   || {}
+
+          const updatedNodes = prev.stage1.nodes.map(node => {
+            let n = { ...node }
+            // Apply deeper-analysis revision to canonical content when requested
+            const revision = nodeRevisions[n.id]
+            if (revision?.statement) {
+              n = {
+                ...n,
+                statement:     revision.statement,
+                evidence_type: revision.evidence_type || n.evidence_type,
+                confidence:    revision.confidence    || n.confidence,
+              }
+            }
+            // Attach new citationRefs where retrieved evidence maps to this node
+            const mapping = nodeEvidenceMap[n.id]
+            if (mapping?.evidenceIds?.length) {
+              const newRefs = mapping.evidenceIds
+                .map(id => modelIdToHostId.get(id) ?? id)
+                .filter(id => mergedById.has(id))
+                .filter((id, i, arr) => arr.indexOf(id) === i)
+              if (newRefs.length > 0) {
+                n = {
+                  ...n,
+                  citationRefs: [...new Set([...(n.citationRefs || []), ...newRefs])],
+                  citationGap:  null,
+                }
+              }
+            }
+            return n
+          })
+
+          // Build refinement layer overlay
+          const overrides = refinementData.nodeOverrides || {}
+          const nodeOverridesWithOriginal = {}
+          prev.stage1.nodes.forEach((n, idx) => {
+            nodeOverridesWithOriginal[n.id] = {
+              ...(overrides[n.id] || {}),
+              originalRank: idx + 1,
+              visible: true,
+            }
+          })
+          const refinementLayer = {
+            prompt:            directionalPrompt,
+            appliedAt:         Date.now(),
+            refinementSummary: refinementData.refinementSummary || '',
+            nodeOverrides:     nodeOverridesWithOriginal,
+          }
+
+          return {
+            ...prev,
+            stage1: {
+              ...prev.stage1,
+              citations:        mergedCitations,
+              nodes:            updatedNodes,
+              refinementLayer,
+              refinementHistory: [
+                ...(prev.stage1.refinementHistory || []),
+                { ...refinementLayer, clearedAt: null },
+              ],
+            },
+          }
+        })
+        return
+      }
+
+      // ── Path 3 — ranking-only refinement (no search) ────────────────
       let refinementData
 
       if (!apiKeySet) {
@@ -464,7 +644,6 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
         refinementData = parseJsonResponse(raw)
       }
 
-      // Attach originalRank from current order before applying overrides
       const nodes = session.stage1.nodes
       const overrides = refinementData.nodeOverrides || {}
       const nodeOverridesWithOriginal = {}
@@ -477,10 +656,10 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       })
 
       const refinementLayer = {
-        prompt:           directionalPrompt,
-        appliedAt:        Date.now(),
+        prompt:            directionalPrompt,
+        appliedAt:         Date.now(),
         refinementSummary: refinementData.refinementSummary || '',
-        nodeOverrides:    nodeOverridesWithOriginal,
+        nodeOverrides:     nodeOverridesWithOriginal,
       }
 
       setSession(prev => ({
@@ -508,6 +687,112 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
     }))
   }
 
+  // ── Enrichment availability ───────────────────────────────────
+  // Recomputed whenever stage1 or refinementLayer changes.
+  // `available` is true only when there are citation gaps AND enrichment has not
+  // already been run for the current primary node gap set.
+  const enrichmentInfo = useMemo(() => {
+    const stage1 = session.stage1
+    if (!stage1) return { available: false, count: 0 }
+    const refinementLayer = stage1.refinementLayer || null
+    const { available, count, gapNodeIds } = computeEnrichmentAvailable(stage1, refinementLayer)
+    if (!available) return { available: false, count: 0 }
+    const basis = stage1.enrichmentBasis
+    const alreadyRunForThisSet = !!(
+      basis &&
+      basis.stage1Id === stage1.id &&
+      basis.primaryNodeIds.length === gapNodeIds.length &&
+      gapNodeIds.every(id => basis.primaryNodeIds.includes(id))
+    )
+    return { available: !alreadyRunForThisSet, count }
+  }, [session.stage1])
+
+  // ── Evidence enrichment pass ──────────────────────────────────
+  // Analyst-triggered only. Uses at most two search-enabled calls.
+  // Attaches new citationRefs to nodes where retrieved evidence matches.
+  // Raw search blocks are never persisted.
+  async function handleEnrichEvidence() {
+    if (!session.stage1 || !apiKeySet) return
+    const stage1 = session.stage1
+    const refinementLayer = stage1.refinementLayer || null
+    const { gapNodeIds } = computeEnrichmentAvailable(stage1, refinementLayer)
+    if (gapNodeIds.length === 0) return
+
+    setIsEnrichingEvidence(true)
+    setError(null)
+
+    try {
+      const gapNodes = stage1.nodes.filter(n => gapNodeIds.includes(n.id))
+      const midpoint = Math.ceil(gapNodes.length / 2)
+      const batch1 = gapNodes.slice(0, midpoint)
+      const batch2 = gapNodes.slice(midpoint)
+
+      const r1 = await callClaudeWithSearch(
+        buildStage1EnrichmentPrompt({ entity: session.entity, intent: session.intent, gapNodes: batch1 }),
+        3000, 2
+      )
+      const data1 = parseJsonResponse(r1.text) || {}
+
+      let allRawSearchBlocks = [...(r1.rawSearchBlocks || [])]
+      let allRetrievedEvidence = [...(data1.retrievedEvidence || [])]
+      let allNodeEvidenceMap = { ...(data1.nodeEvidenceMap || {}) }
+
+      if (batch2.length > 0) {
+        const r2 = await callClaudeWithSearch(
+          buildStage1EnrichmentPrompt({ entity: session.entity, intent: session.intent, gapNodes: batch2 }),
+          3000, 2
+        )
+        const data2 = parseJsonResponse(r2.text) || {}
+        allRawSearchBlocks = [...allRawSearchBlocks, ...(r2.rawSearchBlocks || [])]
+        allRetrievedEvidence = [...allRetrievedEvidence, ...(data2.retrievedEvidence || [])]
+        allNodeEvidenceMap = { ...allNodeEvidenceMap, ...(data2.nodeEvidenceMap || {}) }
+      }
+
+      const { citations: newCitations, modelIdToHostId } = buildStage1Citations(allRawSearchBlocks, allRetrievedEvidence)
+
+      setSession(prev => {
+        const existingCitations = prev.stage1.citations || []
+        const seen = new Set(existingCitations.map(c => (c.url || c.id).toLowerCase().replace(/\/$/, '')))
+        const mergedCitations = [...existingCitations]
+        for (const c of newCitations) {
+          const key = (c.url || c.id).toLowerCase().replace(/\/$/, '')
+          if (!seen.has(key)) { seen.add(key); mergedCitations.push(c) }
+        }
+        const mergedById = new Map(mergedCitations.map(c => [c.id, c]))
+
+        const updatedNodes = prev.stage1.nodes.map(node => {
+          const mapping = allNodeEvidenceMap[node.id]
+          if (!mapping?.evidenceIds?.length) return node
+          const newRefs = mapping.evidenceIds
+            .map(id => modelIdToHostId.get(id) ?? id)
+            .filter(id => mergedById.has(id))
+            .filter((id, i, arr) => arr.indexOf(id) === i)
+          if (newRefs.length === 0) return node
+          const mergedRefs = [...new Set([...(node.citationRefs || []), ...newRefs])]
+          return { ...node, citationRefs: mergedRefs, citationGap: null }
+        })
+
+        return {
+          ...prev,
+          stage1: {
+            ...prev.stage1,
+            citations: mergedCitations,
+            nodes: updatedNodes,
+            enrichmentBasis: {
+              stage1Id: prev.stage1.id,
+              primaryNodeIds: gapNodeIds,
+              runAt: Date.now(),
+            },
+          },
+        }
+      })
+    } catch (e) {
+      setError(`Evidence enrichment failed: ${e.message}`)
+    } finally {
+      setIsEnrichingEvidence(false)
+    }
+  }
+
   // ── Run Stage 2 ───────────────────────────────────────────────
   //
   // First run (no existing stage2): direct write, as before.
@@ -528,15 +813,15 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
       } else {
         const ctx = buildStage2ContextPacket(session)
         const prompt = buildStage2Prompt({
-          entity:           ctx.entity,
-          intent:           ctx.intent,
-          policy:           session.generationPolicy,
-          stage1Summary:    ctx.stage1Summary,
-          acceptedNodes:    ctx.acceptedNodes,
-          refinedNodes:     ctx.refinedNodes,
-          unresolvedNodes:  ctx.unresolvedNodes,
-          openQuestions:    ctx.openQuestions,
-          inferredPatterns: ctx.inferredPatterns,
+          entity:          ctx.entity,
+          intent:          ctx.intent,
+          policy:          session.generationPolicy,
+          stage1Summary:   ctx.stage1Summary,
+          acceptedNodes:   ctx.acceptedNodes,
+          challengedNodes: ctx.challengedNodes,
+          unresolvedNodes: ctx.unresolvedNodes,
+          citations:       ctx.citations,
+          openQuestions:   ctx.openQuestions,
         })
         const { text, rawSearchBlocks } = await callClaudeWithSearch(prompt, 5500, 5)
 
@@ -1787,6 +2072,43 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
           </div>
         )}
 
+        {(effectiveStep === 'stage1_failed') && (
+          <div style={{ maxWidth: 480, margin: '60px auto', padding: '0 20px', textAlign: 'center' }}>
+            <i className="ti ti-alert-circle" style={{ fontSize: 28, color: '#f87171', marginBottom: 12, display: 'block' }} />
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+              Stage 1 generation did not complete
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted2)', lineHeight: 1.7, marginBottom: 20 }}>
+              {error || 'The generation request did not produce a valid artifact.'}
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button
+                onClick={() => handleIntentSubmit(session.entity, session.intent)}
+                style={{
+                  fontSize: 11, fontFamily: 'var(--fm)', fontWeight: 600,
+                  padding: '8px 18px', borderRadius: 6, cursor: 'pointer',
+                  background: 'var(--a2)', color: '#fff', border: 'none',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <i className="ti ti-refresh" style={{ fontSize: 11 }} />
+                Retry Stage 1
+              </button>
+              <button
+                onClick={() => { setError(null); setStep('intent') }}
+                style={{
+                  fontSize: 11, fontFamily: 'var(--fm)',
+                  padding: '8px 18px', borderRadius: 6, cursor: 'pointer',
+                  background: 'none', color: 'var(--muted)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                Edit intent
+              </button>
+            </div>
+          </div>
+        )}
+
         {(effectiveStep === 'stage2_generating') && (
           <div style={{ textAlign: 'center', padding: '60px 20px' }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
@@ -1819,6 +2141,10 @@ export default function SessionFlow({ sessionId, savedSession, globalPolicy, api
             onViewStage2={() => setStep('stage2')}
             onRefine={handleStage1Refine}
             onClearRefinement={handleClearStage1Refinement}
+            onEnrich={handleEnrichEvidence}
+            isEnriching={isEnrichingEvidence}
+            enrichmentAvailable={enrichmentInfo.available}
+            enrichmentCount={enrichmentInfo.count}
           />
         )}
 

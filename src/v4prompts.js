@@ -29,9 +29,9 @@ Cover: what this entity is, who the major players are, core terminology, key wor
 Do NOT produce Stage 2 structural analysis. Flag where deeper analysis would meaningfully improve confidence.
 
 EVIDENCE TYPE RULES — apply to every node:
-- "verified_fact"     — publicly established, unambiguous
-- "user_provided"     — sourced from the USER CONTEXT above
-- "inferred_strategy" — logical inference from domain knowledge
+- "verified_fact"     — publicly established, unambiguous, AND backed by at least one retrieved source
+- "user_provided"     — sourced exclusively from the USER CONTEXT above; do NOT mark as verified_fact
+- "inferred_strategy" — logical inference from domain knowledge; no external citation required
 - "hypothesis"        — speculative, needs validation
 
 NODE RULES:
@@ -43,17 +43,49 @@ NODE RULES:
 - risks:        threats or concerns
 - opportunities: potential upside
 - constraints:  limiting factors
-- Generate 8–12 nodes total
+- Generate 8–10 nodes total (do not exceed 10)
 - Use dependsOn[] to list IDs of other nodes this node logically depends on
 - Assign sequential IDs: n1, n2, n3, …
+
+CITATION RULES — apply to every node:
+- Use the web search tool to retrieve evidence for key claims before writing nodes
+- citationRefs[] must list only evidence IDs from the retrievedEvidence array below
+- NEVER invent a URL, title, publisher, snippet, quote, or evidence ID
+- NEVER add a citationRef that is not in your retrievedEvidence list
+- One retrieved source may support multiple nodes or claims
+- Omit citationRefs when retrieved evidence does not support the claim
+- "verified_fact" nodes MUST have at least one citationRef — if you cannot cite a source, use "inferred_strategy" instead
+- "user_provided" and "inferred_strategy" nodes may have empty citationRefs[]
+- claims[] is optional — generate only when a node contains multiple independently citable assertions
+- Maximum 3 claims per node; keep each claim concise (≤30 words)
+- researchSuggestions[] — list specific evidence types or source categories that would strengthen this node; OMIT this field entirely if empty (do not emit [])
+- citationGap — for verified_fact or high-confidence nodes where expected evidence was not found, describe in one sentence what evidence is missing; OMIT this field entirely if null
 
 INFERRED PATTERNS — analytical strategy lens framing:
 Each inferredPattern should be a reusable analytical heuristic this domain exemplifies — a transferable reasoning structure, not a company-specific observation. Ask: "what would an analyst carry into a similar investigation in a different sector?"
 Examples: "Assistive-first entry in incumbent-heavy markets", "Compliance-constrained AI rollout", "Data moat asymmetry in platform transitions"
 
+OUTPUT SIZE LIMITS (enforce strictly — do not exceed):
+- nodes: 8–10 items maximum
+- retrievedEvidence: one entry per unique source URL; omit duplicates
+- openQuestions: 2 items maximum
+- inferredPatterns: 1 item maximum
+- claims[]: omit entirely when node-level citationRefs are sufficient (most nodes)
+- researchSuggestions: omit field entirely when empty
+- citationGap: omit field entirely when null
+- dependsOn: omit field entirely when empty array
+
 Return ONLY valid JSON with no markdown, no backticks, no commentary:
 {
   "summary": "2-3 sentence orientation summary of what this entity is",
+  "retrievedEvidence": [
+    {
+      "id": "e1",
+      "url": "exact URL from search result — do not alter or normalize",
+      "supportsNodeIds": ["n1", "n2"],
+      "confidence": "high|medium|low"
+    }
+  ],
   "nodes": [
     {
       "id": "n1",
@@ -61,7 +93,8 @@ Return ONLY valid JSON with no markdown, no backticks, no commentary:
       "statement": "single addressable claim under 60 words",
       "confidence": "high|medium|low",
       "evidence_type": "verified_fact|user_provided|inferred_strategy|hypothesis",
-      "dependsOn": []
+      "dependsOn": ["n2"],
+      "citationRefs": ["e1"]
     }
   ],
   "openQuestions": [
@@ -75,7 +108,10 @@ Return ONLY valid JSON with no markdown, no backticks, no commentary:
       "confidence": "medium"
     }
   ]
-}`
+}
+
+COMPACT EVIDENCE NOTE: the retrievedEvidence array needs only the URL mapping — do NOT repeat title, publisher, or snippet. The host already has those fields from the raw search results.
+COMPACT NODE NOTE: emit claims[] only when one node contains multiple independently citable assertions with different evidence. Use node-level citationRefs otherwise.`
 }
 
 // ─── Pressure Test ───────────────────────────────────────────────────────────
@@ -461,6 +497,143 @@ function renderPolicy(policy) {
 - Preserve accepted claims: ${policy.preserveAcceptedClaims ? 'yes' : 'no'}`
 }
 
+// ─── Stage 1 Rerun Classification ────────────────────────────────────────────
+// Classifies the analyst's rerun instruction into operation flags so handleStage1Refine
+// can route to the correct processing path without requiring exact keyword matching.
+//
+// requiresEvidence        — instruction explicitly requests retrieval or citation
+// requiresDeeperAnalysis  — instruction requests deeper/more detailed/product-strategy analysis
+// requiresCanonicalRevision — instruction requests a full Stage 1 regeneration
+// requiresDirectionalAlignment — instruction describes a directional focus or role alignment
+export function classifyRerunInstruction(text) {
+  const t = (text || '').toLowerCase()
+  return {
+    requiresEvidence: /\b(citation|cite|citing|cited|evidence|research|verify|verif|source|reference|backed|support with|retrieve|look up|search|find (sources|evidence|data|proof))\b/.test(t),
+    requiresDeeperAnalysis: /\b(deeper|more detail|expand|elaborate|thorough|comprehensive|in-depth|strengthen|sharpen|improve the analysis|product strategy|strategic analysis|competitive analysis|refine the analysis)\b/.test(t),
+    requiresCanonicalRevision: /\b(regenerate|full rerun|completely redo|start over|restart|redo stage 1|fresh start|from scratch)\b/.test(t),
+    requiresDirectionalAlignment: /\b(focus|lean|emphasize|prioritize|relevant to|for my|for a|align|alignment|resume|background|direction|angle|perspective|position|narrative)\b/.test(t),
+  }
+}
+
+// ─── Stage 1 Direction + Evidence Prompt ─────────────────────────────────────
+// Used when the analyst's rerun instruction requests evidence retrieval or deeper analysis
+// in addition to directional re-ranking. Returns nodeOverrides (for refinementLayer) +
+// retrievedEvidence + nodeEvidenceMap (for citation registry) + optional nodeRevisions.
+export function buildStage1DirectionWithEvidencePrompt({ nodes, entity, intent, directionalPrompt, requestFlags }) {
+  const nodeBlock = nodes.map(n => {
+    const citationStatus = resolveNodeCitationStatus(n)
+    const gapNote = n.citationGap ? ` [gap: ${n.citationGap}]` : ''
+    return `  ${n.id} [${n.type}] [${n.confidence}] [${n.evidence_type}] [${citationStatus}]${gapNote}: ${n.statement}`
+  }).join('\n')
+
+  const revisionsInstruction = requestFlags.requiresDeeperAnalysis
+    ? `
+STEP 3 — DEEPEN ANALYSIS (where the instruction requests it)
+Revise node statements that would meaningfully benefit from deeper product-strategy or analytical precision.
+Only revise when you can produce a defensibly better version. Preserve statements that are already accurate.
+Update evidence_type if retrieved evidence changes the classification (e.g. inferred_strategy → verified_fact only when citation now supports it).
+`
+    : ''
+
+  const revisionsSchema = requestFlags.requiresDeeperAnalysis
+    ? `,
+  "nodeRevisions": {
+    "n1": { "statement": "revised statement — only if meaningfully improved", "evidence_type": "verified_fact|inferred_strategy|hypothesis|user_provided", "confidence": "high|medium|low" }
+  }`
+    : ''
+
+  const operationLines = [
+    requestFlags.requiresEvidence       && '- Retrieve evidence and attach citations',
+    requestFlags.requiresDeeperAnalysis && '- Deepen analysis of relevant nodes',
+    requestFlags.requiresDirectionalAlignment && '- Apply directional alignment to the overlay',
+  ].filter(Boolean).join('\n')
+
+  return `You are a domain analysis engine. The analyst has an existing Stage 1 orientation graph and has issued an instruction that requests directional re-ranking combined with evidence retrieval.
+
+ENTITY: "${entity.name}" (${entity.type})
+INTENT ROLE: ${intent.role}
+INTENT OUTCOME: ${intent.outcome}
+
+ANALYST INSTRUCTION:
+"${directionalPrompt}"
+
+OPERATIONS REQUESTED:
+${operationLines}
+
+CURRENT NODES (id [type] [confidence] [evidence_type] [citationStatus]):
+${nodeBlock}
+
+STEP 1 — RETRIEVE EVIDENCE
+Use the web search tool to find evidence for key factual claims.
+Prioritize nodes marked uncited or with a citation gap.
+Group related nodes into research themes. Use at most 3 searches total.
+${revisionsInstruction}
+STEP 2 — RANK AND ANNOTATE
+Re-rank and annotate every node based on the directional instruction.
+For each node, produce a nodeOverride entry with rank, emphasis, rankReason.
+
+STEP 4 — MAP EVIDENCE TO NODES
+For each node that retrieved evidence supports, list the evidenceIds and support type.
+
+CITATION RULES:
+- Only reference evidence IDs from the retrievedEvidence array below
+- NEVER invent URLs, titles, publishers, or snippets
+- Only map evidence to a node when it genuinely supports the claim
+- Omit nodes from nodeEvidenceMap when no relevant evidence was found
+- Do not promote a node to verified_fact unless retrieved evidence directly confirms the claim
+- Nodes without citations remain their current evidence_type
+
+Return ONLY valid JSON. No markdown. No backticks. No commentary:
+{
+  "directionalPrompt": "${directionalPrompt.replace(/"/g, '\\"')}",
+  "refinementSummary": "1-2 sentences summarizing what changed directionally and what evidence was retrieved",
+  "nodeOverrides": {
+    "n1": {
+      "rank": 1,
+      "emphasis": "primary|secondary|suppressed",
+      "groupTag": "string or null",
+      "rankReason": "REQUIRED — one sentence on why this rank and emphasis under the instruction",
+      "refinementNote": "optional one sentence on how to use this node for the stated direction — null if not applicable",
+      "emphasisIsCitationBacked": false
+    }
+  },
+  "retrievedEvidence": [
+    {
+      "id": "e1",
+      "type": "direct_evidence|pattern_inference|contradictory_evidence",
+      "title": "exact title from search result",
+      "url": "exact URL — do not alter or normalize",
+      "publisher": "domain or publisher name",
+      "snippet": "verbatim or close-paraphrase excerpt — max 60 words",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "nodeEvidenceMap": {
+    "n1": { "evidenceIds": ["e1"], "supportType": "direct|partial|context" }
+  }${revisionsSchema}
+}`
+}
+
+export const MOCK_STAGE1_DIRECTION_WITH_EVIDENCE = {
+  ...({} /* populated inline — keeps MOCK_STAGE1_REFINEMENT as ranking-only */),
+  directionalPrompt: 'Lean this toward CIAM relevance.',
+  refinementSummary: 'Re-ranked and annotated nodes for CIAM relevance. No evidence was retrieved in demo mode.',
+  nodeOverrides: {
+    n1: { rank: 3, emphasis: 'secondary', groupTag: 'market-context', rankReason: 'Market fragmentation context is useful background but not directly CIAM-relevant.', refinementNote: 'Could be strengthened by noting how identity data is siloed across community bank systems.', emphasisIsCitationBacked: false },
+    n2: { rank: 4, emphasis: 'secondary', groupTag: 'market-context', rankReason: 'Broad platform description; useful orientation but not CIAM-specific.', refinementNote: null, emphasisIsCitationBacked: false },
+    n3: { rank: 7, emphasis: 'suppressed', groupTag: null, rankReason: 'Revenue model mechanics are not relevant to a CIAM-focused investigation.', refinementNote: null, emphasisIsCitationBacked: false },
+    n4: { rank: 1, emphasis: 'primary', groupTag: 'persona', rankReason: 'CFO/COO persona maps directly to CIAM buyer profiles.', refinementNote: null, emphasisIsCitationBacked: false },
+    n5: { rank: 5, emphasis: 'secondary', groupTag: 'go-to-market', rankReason: 'Sales motion is relevant context but secondary to CIAM capability gaps.', refinementNote: null, emphasisIsCitationBacked: false },
+    n6: { rank: 2, emphasis: 'primary', groupTag: 'capability-gap', rankReason: 'Explainability gap directly parallels CIAM audit trail requirements.', refinementNote: null, emphasisIsCitationBacked: false },
+    n7: { rank: 6, emphasis: 'secondary', groupTag: 'adoption-risk', rankReason: 'Change management risk is relevant but generic.', refinementNote: null, emphasisIsCitationBacked: false },
+    n8: { rank: 1, emphasis: 'primary', groupTag: 'regulatory', rankReason: 'FDIC/OCC constraints are the core driver of CIAM requirements in banking.', refinementNote: null, emphasisIsCitationBacked: false },
+    n9: { rank: 8, emphasis: 'suppressed', groupTag: null, rankReason: 'Upmarket expansion hypothesis is not CIAM-relevant at orientation stage.', refinementNote: null, emphasisIsCitationBacked: false },
+  },
+  retrievedEvidence: [],
+  nodeEvidenceMap: {},
+  nodeRevisions: {},
+}
+
 // ─── Stage 1 Directional Refinement ─────────────────────────────────────────
 // Applied after Stage 1 generation. Re-ranks, groups, and annotates existing
 // nodes based on a user directional prompt. Never deletes nodes.
@@ -486,15 +659,15 @@ ${nodeBlock}
 Your job: re-rank, group, and annotate each node based on how relevant or useful it is given the directional prompt. Do NOT delete nodes. Do NOT rewrite node statements.
 
 For each node, produce a nodeOverride entry:
-- rank: integer (1 = highest priority under this direction). Assign unique ranks.
+- rank: integer (1 = highest priority under this direction). Assign unique ranks. No two nodes may share the same rank.
 - emphasis: "primary" | "secondary" | "suppressed"
   - primary: directly serves the directional goal
   - secondary: peripherally relevant
   - suppressed: not relevant to this direction
 - groupTag: short label grouping related nodes (e.g. "role-fit", "competitor gaps", "regulatory") — null if ungrouped
-- rankReason: one sentence explaining why this node got this rank/emphasis under the directional prompt
+- rankReason: REQUIRED for every node regardless of emphasis. One sentence explaining why this node received this specific rank and emphasis under the directional prompt. Describe the analytical relevance — or irrelevance — of the node to the direction. Do not leave this blank.
 - refinementNote: optional one sentence noting how the user could use or strengthen this node for the stated direction — null if not applicable
-- emphasisIsCitationBacked: true if the node has citation support that backs the emphasis decision, false if emphasis is inferred
+- emphasisIsCitationBacked: true if the node has citation support that backs the emphasis decision, false if emphasis is user-directed inference
 
 Return ONLY valid JSON with no markdown, no backticks, no commentary:
 {
@@ -541,6 +714,143 @@ export const MOCK_STAGE1_REFINEMENT = {
   },
 }
 
+// ─── Stage 1 evidence enrichment ─────────────────────────────────────────────
+// Analyst-triggered bounded search pass. Groups uncited primary nodes into themes,
+// uses at most 2 search-enabled calls total, maps retrieved evidence back to nodes.
+// Raw search blocks are never persisted; only resolved citation refs are written back.
+export function buildStage1EnrichmentPrompt({ entity, intent, gapNodes }) {
+  const nodeLines = gapNodes
+    .map(n =>
+      `  [${n.id}] (${n.type}, ${n.evidence_type}) "${n.statement}"` +
+      (n.citationGap ? `\n    Evidence needed: ${n.citationGap}` : '') +
+      (n.researchSuggestions?.length > 0 ? `\n    Research suggestions: ${n.researchSuggestions.join('; ')}` : '')
+    )
+    .join('\n')
+
+  return `You are enriching evidence for Stage 1 analytical nodes that currently lack supporting citations.
+
+ENTITY: "${entity.name}" (${entity.type})
+RESEARCH INTENT: ${intent.role} — ${intent.what}
+
+UNCITED PRIMARY NODES REQUIRING EVIDENCE:
+${nodeLines}
+
+Use the web search tool to find evidence. Group related nodes into research themes and search efficiently.
+
+After searching, return ONLY valid JSON with no markdown, no backticks, no commentary:
+{
+  "retrievedEvidence": [
+    {
+      "id": "e1",
+      "type": "direct_evidence|pattern_inference|contradictory_evidence",
+      "title": "exact page or article title from search result",
+      "url": "exact URL — do not alter or normalize",
+      "publisher": "domain or publisher name",
+      "snippet": "verbatim or close-paraphrase excerpt — max 60 words",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "nodeEvidenceMap": {
+    "n1": { "evidenceIds": ["e1"], "supportType": "direct|partial|context" }
+  }
+}
+
+RULES:
+- Only reference evidence IDs defined in retrievedEvidence above
+- NEVER invent URLs, titles, publishers, or snippets
+- Only map a node if retrieved evidence genuinely supports the claim
+- Omit nodes from nodeEvidenceMap if no relevant evidence was found
+- Use at most 2 search calls total`
+}
+
+// ─── Stage 1 compact retry prompt ────────────────────────────────────────────
+// Used when initial Stage 1 generation terminates with max_tokens.
+// Reuses already-retrieved evidence embedded in the prompt — no re-search needed.
+// Returns the same output schema as buildStage1Prompt but with stripped fields.
+export function buildStage1CompactRetryPrompt({ entity, intent, policy, embeddedEvidence }) {
+  const policyBlock = renderPolicy(policy)
+  const contextLine = entity.context
+    ? `\nUSER CONTEXT (L2 — treat as higher trust than AI inference):\n${entity.context}`
+    : ''
+
+  const evidenceBlock = embeddedEvidence.length > 0
+    ? embeddedEvidence.map((s, i) =>
+        `  [src_${i + 1}] ${s.url}${s.title ? ` — "${s.title}"` : ''}${s.snippet ? `\n    "${s.snippet}"` : ''}`
+      ).join('\n')
+    : '  (no evidence retrieved)'
+
+  return `You are a rigorous domain analyst completing a Stage 1 orientation analysis.
+
+ENTITY: "${entity.name}" (type: ${entity.type})${contextLine}
+
+RESEARCH INTENT:
+- What: ${intent.what}
+- Why: ${intent.why}
+- Role: ${intent.role}
+- Depth: ${intent.depth}
+- Outcome: ${intent.outcome}
+
+${policyBlock}
+
+Stage 1 purpose: orientation only.
+Cover: what this entity is, who the major players are, core terminology, key workflows, ecosystem, business model basics.
+Do NOT produce Stage 2 structural analysis.
+
+EVIDENCE ALREADY RETRIEVED (do not re-search — use these sources directly):
+${evidenceBlock}
+
+Reference sources as src_1, src_2, etc. in citationRefs.
+
+EVIDENCE TYPE RULES:
+- "verified_fact"     — publicly established AND backed by at least one retrieved source above
+- "inferred_strategy" — logical inference; no citation required
+- "hypothesis"        — speculative, needs validation
+
+NODE RULES:
+- type options: finding | assumption | hypothesis | risk | opportunity | constraint
+- Generate 6–8 nodes total (compact — do not exceed 8)
+- Assign sequential IDs: n1, n2, n3, …
+
+CITATION RULES:
+- citationRefs[] must list only source IDs from the evidence list above (src_1, src_2, …)
+- NEVER invent source IDs not listed above
+- Omit citationRefs when evidence does not support the claim
+- citationGap: omit field if null; include only when an important factual claim lacks any listed source
+
+OUTPUT SIZE LIMITS (strict):
+- nodes: 6–8 items maximum
+- openQuestions: 2 items maximum
+- inferredPatterns: 1 item maximum
+- claims[]: omit unless a node has multiple independently citable assertions
+- researchSuggestions: omit when empty
+- citationGap: omit when null
+- dependsOn: omit when empty
+
+Return ONLY valid JSON with no markdown, no backticks, no commentary:
+{
+  "summary": "2-3 sentence orientation summary",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "finding",
+      "statement": "single addressable claim under 60 words",
+      "confidence": "high|medium|low",
+      "evidence_type": "verified_fact|inferred_strategy|hypothesis",
+      "citationRefs": ["src_1"]
+    }
+  ],
+  "openQuestions": ["question whose answer would meaningfully improve confidence"],
+  "inferredPatterns": [
+    {
+      "title": "transferable analytical lens",
+      "insight": "one-sentence heuristic for an analyst studying a DIFFERENT entity",
+      "transferability": "broad|sector-specific|niche",
+      "confidence": "medium"
+    }
+  ]
+}`
+}
+
 // ─── Demo mock data ───────────────────────────────────────────────────────────
 // Used when no API key is present. Represents a Stage 1 analysis of Finlytica (company).
 // n3 is the intentionally weak assumption — the demo challenge targets it.
@@ -548,6 +858,8 @@ export const MOCK_STAGE1_REFINEMENT = {
 
 export const MOCK_V4_STAGE1 = {
   summary: 'Finlytica is a specialized analytics platform targeting community banks — institutions that are typically analytics-light and decision-making by relationship and intuition. It likely positions itself as a hybrid of consulting trust and SaaS convenience, competing less on feature depth than on operational fit.',
+  retrievedEvidence: [],
+  citations: [],
   nodes: [
     {
       id: 'n1',
@@ -556,6 +868,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'high',
       evidence_type: 'inferred_strategy',
       dependsOn: [],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -566,6 +880,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'medium',
       evidence_type: 'inferred_strategy',
       dependsOn: [],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -576,6 +892,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'low',
       evidence_type: 'hypothesis',
       dependsOn: ['n2'],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -586,6 +904,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'medium',
       evidence_type: 'inferred_strategy',
       dependsOn: ['n1'],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -596,6 +916,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'medium',
       evidence_type: 'inferred_strategy',
       dependsOn: ['n1', 'n4'],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -606,6 +928,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'medium',
       evidence_type: 'inferred_strategy',
       dependsOn: ['n1', 'n4'],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -616,6 +940,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'medium',
       evidence_type: 'inferred_strategy',
       dependsOn: ['n5'],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -624,8 +950,10 @@ export const MOCK_V4_STAGE1 = {
       type: 'constraint',
       statement: 'Community banks operate under strict federal and state regulatory oversight (FDIC, OCC, state regulators), constraining data-sharing arrangements, third-party integrations, and how analytics findings can be operationalized.',
       confidence: 'high',
-      evidence_type: 'verified_fact',
+      evidence_type: 'inferred_strategy',
       dependsOn: [],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -636,6 +964,8 @@ export const MOCK_V4_STAGE1 = {
       confidence: 'low',
       evidence_type: 'hypothesis',
       dependsOn: ['n2', 'n3'],
+      citationRefs: [], claims: [], validationWarnings: [],
+      researchSuggestions: [], citationGap: null,
       userStatus: 'pending', userNote: null, userPreset: null,
       previousStatement: null, changeReason: null, lastUpdated: null,
     },
@@ -795,8 +1125,8 @@ export const MOCK_PRESSURE_TEST_RESULT_PRESERVE = {
 
 export function buildStage2Prompt({
   entity, intent, policy,
-  stage1Summary, acceptedNodes, refinedNodes, unresolvedNodes,
-  openQuestions, inferredPatterns,
+  stage1Summary, acceptedNodes, challengedNodes, unresolvedNodes,
+  citations, openQuestions,
 }) {
   const policyBlock = renderPolicy(policy)
 
@@ -804,9 +1134,9 @@ export function buildStage2Prompt({
     ? acceptedNodes.map(n => `  [${n.id}] (${n.type}, ${n.confidence}) "${n.statement}"`).join('\n')
     : '  None yet.'
 
-  const refinedBlock = refinedNodes.length > 0
-    ? refinedNodes.map(n =>
-        `  [${n.id}] Original: "${n.previousStatement}"\n          Revised:  "${n.statement}"`
+  const challengedBlock = challengedNodes.length > 0
+    ? challengedNodes.map(n =>
+        `  [${n.id}] (${n.type}, ${n.confidence}) "${n.statement}"${n.challengeNote ? `\n    Challenge note: ${n.challengeNote}` : ''}`
       ).join('\n')
     : '  None.'
 
@@ -814,13 +1144,15 @@ export function buildStage2Prompt({
     ? unresolvedNodes.map(n => `  [${n.id}] "${n.statement}" — ${n.userNote || 'flagged for review'}`).join('\n')
     : '  None.'
 
+  const citationsBlock = citations.length > 0
+    ? citations.map((c, i) =>
+        `  [${i + 1}] "${c.title}" — ${c.domain || c.publisher || 'unknown source'}\n      ${c.snippet ? `"${c.snippet}"` : '(no excerpt)'}`
+      ).join('\n')
+    : '  None.'
+
   const questionsBlock = openQuestions.length > 0
     ? openQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')
     : '  None recorded.'
-
-  const patternsBlock = inferredPatterns.length > 0
-    ? inferredPatterns.map(p => `  - ${p.title}: ${p.insight}`).join('\n')
-    : '  None.'
 
   return `You are a rigorous strategic analyst conducting Stage 2 synthesis for "${entity.name}".
 
@@ -834,20 +1166,20 @@ RESEARCH INTENT: ${intent.what}${intent.why ? ' — ' + intent.why : ''}
 STAGE 1 SUMMARY:
 ${stage1Summary}
 
-ACCEPTED ASSERTIONS:
+ACCEPTED ASSERTIONS (primary nodes):
 ${acceptedBlock}
 
-REVISED ASSERTIONS (pressure-tested):
-${refinedBlock}
+CHALLENGED ASSERTIONS (primary nodes under scrutiny):
+${challengedBlock}
 
-UNRESOLVED ASSERTIONS:
+UNRESOLVED ASSERTIONS (flagged for review):
 ${unresolvedBlock}
+
+SUPPORTING EVIDENCE (canonical citations from included nodes):
+${citationsBlock}
 
 OPEN QUESTIONS:
 ${questionsBlock}
-
-INFERRED PATTERNS:
-${patternsBlock}
 
 ${policyBlock}
 

@@ -11,7 +11,7 @@ const STATUS_ACTIONS = [
   { status: 'rejected',     label: 'Reject',        icon: 'ti-x' },
 ]
 
-export default function NodeCard({ node, allNodes, refinementOverride, onStatusChange, onChallengeClick, onRegenClick, onNeedsReviewClick }) {
+export default function NodeCard({ node, allNodes, citations: propCitations, refinementOverride, onStatusChange, onChallengeClick, onRegenClick, onNeedsReviewClick }) {
   const nodeType  = NODE_TYPES[node.type]         || NODE_TYPES.finding
   const statusCfg = NODE_STATUS_CONFIG[node.userStatus] || NODE_STATUS_CONFIG.pending
   const { pct, color } = confPct(node.confidence)
@@ -19,11 +19,8 @@ export default function NodeCard({ node, allNodes, refinementOverride, onStatusC
 
   const depLabels = (node.dependsOn || []).filter(Boolean)
 
-  // Resolve citation status from all available sources
-  const citationStatus = resolveCitationStatus(node)
-
   // Refinement overlay
-  const emphasis = refinementOverride?.emphasis || null
+  const emphasis    = refinementOverride?.emphasis || null
   const isSuppressed = emphasis === 'suppressed'
 
   const cardClass = [
@@ -39,15 +36,37 @@ export default function NodeCard({ node, allNodes, refinementOverride, onStatusC
     else { onStatusChange(node.id, status) }
   }
 
-  // Effective review: prefer latestReview; fall back to most recent reviewHistory
-  // entry that has at least one citation. Handles data created before this feature.
-  const effectiveReview = (node.latestReview?.citations?.length > 0)
-    ? node.latestReview
-    : (node.reviewHistory || []).slice().reverse().find(e => e.citations?.length > 0) ?? null
+  // Citation precedence:
+  //   1. propCitations — pre-resolved by Stage1Panel (merges registry + review citations)
+  //   2. latestReview.citations — from pressure-test accept
+  //   3. most recent reviewHistory entry with citations
+  //   4. empty
+  const citations = propCitations?.length > 0
+    ? propCitations
+    : (() => {
+        const effectiveReview = (node.latestReview?.citations?.length > 0)
+          ? node.latestReview
+          : (node.reviewHistory || []).slice().reverse().find(e => e.citations?.length > 0) ?? null
+        return effectiveReview?.citations || []
+      })()
 
-  const citations    = effectiveReview?.citations         || []
-  const rawRefs      = effectiveReview?.inlineCitationRefs || []
-  const hasCitations = citations.length > 0
+  // For inline ref placement, prefer inlineCitationRefs from latestReview when available.
+  // When using registry-resolved propCitations, generate sequential refs from the citation array.
+  const rawRefs = (() => {
+    if (propCitations?.length > 0) {
+      // Registry citations: generate rendering refs (sentenceIndex null → snippet/distribute)
+      return propCitations.map((c, i) => ({
+        citationId: c.id, marker: i + 1, sentenceIndex: null, claimText: null,
+      }))
+    }
+    const effectiveReview = (node.latestReview?.citations?.length > 0)
+      ? node.latestReview
+      : (node.reviewHistory || []).slice().reverse().find(e => e.citations?.length > 0) ?? null
+    return effectiveReview?.inlineCitationRefs || []
+  })()
+
+  const citationStatus = resolveCitationStatus(node, citations)
+  const hasCitations   = citations.length > 0
 
   // If citations exist but refs don't match any citation (ID mismatch from older data),
   // generate rendering-only refs from the citations array. Never mutates saved data.
@@ -129,6 +148,19 @@ export default function NodeCard({ node, allNodes, refinementOverride, onStatusC
           <i className="ti ti-info-circle" style={{ fontSize: 10, verticalAlign: -1 }} /> {node.changeReason}
         </div>
       )}
+
+      {/* Validation warnings — e.g. verified_fact with no resolved citation */}
+      {(node.validationWarnings || []).map((w, i) => (
+        <div key={i} style={{
+          fontSize: 9, fontFamily: 'var(--fm)', lineHeight: 1.55,
+          padding: '4px 8px', marginBottom: 6, borderRadius: 5,
+          background: 'rgba(251,146,60,.06)', border: '1px solid rgba(251,146,60,.25)',
+          color: '#fb923c', display: 'flex', alignItems: 'flex-start', gap: 5,
+        }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 9, marginTop: 1, flexShrink: 0 }} />
+          <span>{w.message}</span>
+        </div>
+      ))}
 
       {/* Expandable citation panel — only when citations actually exist */}
       {hasCitations && (
@@ -381,31 +413,28 @@ function CitationPanel({ citations, refs, reviewHistory }) {
 }
 
 // ── Citation status resolution ────────────────────────────────────────────────
-// Resolves a node's citation status from:
-//   1. node.citationStatus (explicit field on the node)
-//   2. node.claims[].citationStatus (claim-level citations)
-//   3. node.latestReview.citations / reviewHistory (evidence from pressure tests)
+// Derives render-time citation status from the already-resolved citations array.
+// Never persisted — computed fresh each render.
+//
+// Status values (render-time only, never stored):
+//   cited    — at least one direct citation
+//   weak     — citations exist but only partial/context support
+//   inferred — no citations; evidence_type is inferred_strategy or hypothesis
+//   uncited  — no citations and not intentionally inferential
 
-function resolveCitationStatus(node) {
-  if (node.citationStatus) return node.citationStatus
-
-  if (node.claims?.length > 0) {
-    const statuses = node.claims.map(c => c.citationStatus).filter(Boolean)
-    if (statuses.includes('cited'))    return 'cited'
-    if (statuses.includes('weak'))     return 'weak'
-    if (statuses.includes('inferred')) return 'inferred'
-    if (statuses.length > 0)           return statuses[0]
+function resolveCitationStatus(node, resolvedCitations) {
+  const citations = resolvedCitations || []
+  if (citations.length > 0) {
+    const levels = citations.map(c => c.supportsClaim)
+    if (levels.some(l => l === 'direct'))            return 'cited'
+    if (levels.some(l => l === 'partial'))           return 'weak'
+    return 'weak'
   }
-
-  const citations = node.latestReview?.citations?.length > 0
-    ? node.latestReview.citations
-    : (node.reviewHistory || []).slice().reverse().find(e => e.citations?.length > 0)?.citations || []
-
-  if (citations.length === 0) return 'uncited'
-  const levels = citations.map(c => c.supportsClaim)
-  if (levels.some(l => l === 'direct'))  return 'cited'
-  if (levels.some(l => l === 'partial')) return 'weak'
-  return 'inferred'
+  // No citations — distinguish intentional inference from genuinely uncited
+  if (node.evidence_type === 'inferred_strategy' || node.evidence_type === 'hypothesis') {
+    return 'inferred'
+  }
+  return 'uncited'
 }
 
 // ── CitationStatusBadge ───────────────────────────────────────────────────────
@@ -444,6 +473,13 @@ function RefinementBanner({ override }) {
   const cfg = EMPHASIS_CONFIG[override.emphasis] || EMPHASIS_CONFIG.secondary
   if (override.emphasis === 'secondary' && !override.rankReason && !override.refinementNote) return null
 
+  // Rank movement: smaller rank = higher in list.
+  // rank < originalRank → promoted (▲); rank > originalRank → deprioritized (▼); same → unchanged (●)
+  const hasMovement = typeof override.rank === 'number' && typeof override.originalRank === 'number'
+  const delta       = hasMovement ? override.rank - override.originalRank : 0
+  const moveGlyph   = !hasMovement ? null : delta < 0 ? '▲' : delta > 0 ? '▼' : '●'
+  const moveColor   = delta < 0 ? 'var(--accent)' : delta > 0 ? '#f87171' : 'var(--muted)'
+
   return (
     <div style={{
       fontSize: 9, fontFamily: 'var(--fm)', lineHeight: 1.55,
@@ -451,17 +487,22 @@ function RefinementBanner({ override }) {
       background: cfg.bg, border: `1px solid ${cfg.border}`,
       color: cfg.color,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: override.rankReason ? 3 : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: (override.rankReason || override.refinementNote) ? 3 : 0 }}>
+        {moveGlyph && (
+          <span style={{ fontSize: 9, color: moveColor, fontWeight: 700, flexShrink: 0 }}>
+            {moveGlyph}
+          </span>
+        )}
         {cfg.icon && <i className={`ti ${cfg.icon}`} style={{ fontSize: 9 }} />}
         <span style={{ fontWeight: 600 }}>
           {cfg.label}
           {override.groupTag && <span style={{ fontWeight: 400, marginLeft: 5, color: 'var(--muted)' }}>· {override.groupTag}</span>}
         </span>
-        {override.emphasisIsCitationBacked && (
-          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 9 }}>
-            <i className="ti ti-link" style={{ fontSize: 9 }} /> citation-backed
-          </span>
-        )}
+        <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--muted)', fontStyle: 'italic' }}>
+          {override.emphasisIsCitationBacked
+            ? <><i className="ti ti-link" style={{ fontSize: 9 }} /> citation-backed</>
+            : 'user-directed'}
+        </span>
       </div>
       {override.rankReason && (
         <div style={{ color: 'var(--muted2)', fontSize: 9 }}>{override.rankReason}</div>
